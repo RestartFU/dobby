@@ -6,6 +6,12 @@ Developer tool for diagnosing Minecraft Bedrock packet violations with macOS
 It captures `PacketViolationWarningPacket`, displays the exact reason in a compact in-game window,
 and provides clipboard-ready diagnostics and JSON logs.
 
+## In-game diagnostic
+
+Shows the rejected packet, violation type, exact Bedrock reason, and copyable diagnostics without leaving the game.
+
+![Packet rejection diagnostic window](media/image.png)
+
 ## Target
 
 - Minecraft Android `1.26.40.5`

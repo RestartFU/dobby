@@ -24,6 +24,9 @@ CMakeFiles/
 /latest-packet-violation.txt
 /last-copied-diagnostic.txt
 /media/
+!/media/
+/media/*
+!/media/image.png
 
 # Credentials and local configuration
 .env
