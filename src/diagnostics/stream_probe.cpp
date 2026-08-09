@@ -1,6 +1,7 @@
 #include "diagnostics/stream_probe.hpp"
 
 #include "core/constants.hpp"
+#include "diagnostics/client_schema_trace.hpp"
 
 #include <algorithm>
 #include <array>
@@ -111,7 +112,7 @@ void captureStreamReadAttempt(const void* stream, std::size_t requested, std::si
     const std::size_t available = view->size - view->readPointer;
     const bool overflow = view->overflowed || requested > available;
     activeTrace.attempts[activeTrace.nextAttempt] = StreamReadAttempt{
-            view->readPointer, requested, available, overflow};
+            view->readPointer, requested, available, overflow, currentClientSchemaPath()};
     activeTrace.nextAttempt = (activeTrace.nextAttempt + 1) % kMaximumTraceAttempts;
     activeTrace.attemptCount = std::min(activeTrace.attemptCount + 1, kMaximumTraceAttempts);
     activeTrace.previousOffset = view->readPointer;
@@ -177,6 +178,7 @@ std::optional<StreamFailure> recentStreamFailure(std::chrono::milliseconds maxim
 
 void clearStreamProbe() {
     activeTrace = {};
+    clearClientSchemaTrace();
     std::lock_guard lock(failureMutex);
     lastFailure.reset();
 }

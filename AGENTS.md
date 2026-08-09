@@ -15,7 +15,7 @@
 - `src/dobby.cpp` owns only exported lifecycle entrypoints.
 - `src/core/` owns configuration, constants, and shared runtime state.
 - `src/diagnostics/` owns decoded records, stream traces, and reports.
-- `src/network/` owns packet names and expected wire-schema descriptions.
+- `src/network/` owns the packet ID-to-name catalog.
 - `src/hooks/` owns image discovery, validation, detours, and hook installation.
 - `src/platform/` owns files, logs, clipboard, and launcher ABI bridges.
 - `src/ui/` owns the in-game menu, windows, actions, and presentation.
@@ -37,14 +37,14 @@
 - `stream_probe.*` understands the ReadOnlyBinaryStream layout and read traces only.
 - `report_builder.*` converts evidence into UI summaries, text, and JSON.
 - Keep raw evidence distinct from interpretations in every report.
-- Label inferred direction, schema, and failure boundaries precisely.
+- Persist only fields and boundaries observed directly from the client.
 - Never include live process pointers in persisted reports.
 - Add a unit test whenever a decoded field or layout offset changes.
 ## Network catalog
 
 - `packet_names.hpp` is the canonical packet-ID-to-name table.
 - Regenerate packet names from the matching LeviLamina generated header.
-- `packet_schema.*` contains human-readable expected wire structures.
+- Client field names come from the runtime PacketSchemaReader trace.
 - Do not claim a field boundary unless instrumentation proves it.
 - Unknown packet IDs must remain printable as numeric and hexadecimal values.
 - Unknown schemas must still expose byte-level stream evidence.

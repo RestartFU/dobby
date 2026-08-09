@@ -3,6 +3,7 @@
 #include "core/config.hpp"
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"
+#include "diagnostics/client_schema_trace.hpp"
 #include "diagnostics/report_builder.hpp"
 #include "diagnostics/stream_probe.hpp"
 #include "diagnostics/violation_decoder.hpp"
@@ -14,9 +15,11 @@
 
 #include <chrono>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 #if defined(__ANDROID__)
 
@@ -99,6 +102,7 @@ namespace {
 
 using GetIdFn = std::int32_t (*)(const void* packet);
 GetIdFn originalViolationGetId = nullptr;
+std::atomic_bool schemaTraceEnabled{false};
 thread_local bool handlingViolation = false;
 thread_local const void* lastViolationPacket = nullptr;
 thread_local std::chrono::steady_clock::time_point lastViolationAt{};
@@ -141,6 +145,72 @@ void handleViolation(const char* intercept, const void* packet) {
 std::int32_t violationGetIdDetour(const void* packet) {
     handleViolation("PacketViolationWarningPacket::getId vtable", packet);
     return originalViolationGetId != nullptr ? originalViolationGetId(packet) : 156;
+}
+
+bool schemaPushMemberDetour(const void*, std::string_view name) {
+    if (schemaTraceEnabled.load(std::memory_order_relaxed))
+        pushClientSchemaMember(name);
+    return true;
+}
+
+void schemaPushElementDetour(const void*, std::uint64_t index) {
+    if (schemaTraceEnabled.load(std::memory_order_relaxed))
+        pushClientSchemaElement(index);
+}
+
+void schemaPopDetour(const void*) {
+    if (schemaTraceEnabled.load(std::memory_order_relaxed))
+        popClientSchemaContext();
+}
+
+bool patchSchemaSlot(void** slot, void* replacement) {
+    return mcpelauncher_patch(slot, &replacement, sizeof(replacement)) != nullptr &&
+           *slot == replacement;
+}
+
+bool installClientSchemaProbe(const MinecraftImage& image) {
+    const auto pushMemberAddress = image.base + target::kSchemaPushMemberOffset;
+    const auto pushElementAddress = image.base + target::kSchemaPushElementOffset;
+    const auto popAddress = image.base + target::kSchemaPopOffset;
+    auto* pushMemberSlot = reinterpret_cast<void**>(
+            image.base + target::kSchemaPushMemberVtableSlotOffset);
+    auto* pushElementSlot = reinterpret_cast<void**>(
+            image.base + target::kSchemaPushElementVtableSlotOffset);
+    auto* popSlot = reinterpret_cast<void**>(image.base + target::kSchemaPopVtableSlotOffset);
+
+    const bool valid =
+            addressIsExecutable(image, pushMemberAddress) &&
+            addressIsExecutable(image, pushElementAddress) &&
+            addressIsExecutable(image, popAddress) &&
+            matchesSignature(reinterpret_cast<const void*>(pushMemberAddress),
+                             target::kSchemaPushMemberSignature) &&
+            matchesSignature(reinterpret_cast<const void*>(pushElementAddress),
+                             target::kSchemaPushElementSignature) &&
+            matchesSignature(reinterpret_cast<const void*>(popAddress),
+                             target::kSchemaPopSignature) &&
+            *pushMemberSlot == reinterpret_cast<void*>(pushMemberAddress) &&
+            *pushElementSlot == reinterpret_cast<void*>(pushElementAddress) &&
+            *popSlot == reinterpret_cast<void*>(popAddress);
+    if (!valid) {
+        logLine("ERROR: PacketSchemaReader layout mismatch; client field trace disabled");
+        return false;
+    }
+    if (mcpelauncher_patch == nullptr) {
+        logLine("ERROR: launcher patch API unavailable; client field trace disabled");
+        return false;
+    }
+
+    schemaTraceEnabled.store(false, std::memory_order_relaxed);
+    if (!patchSchemaSlot(pushMemberSlot, reinterpret_cast<void*>(schemaPushMemberDetour)) ||
+        !patchSchemaSlot(pushElementSlot, reinterpret_cast<void*>(schemaPushElementDetour)) ||
+        !patchSchemaSlot(popSlot, reinterpret_cast<void*>(schemaPopDetour))) {
+        logLine("ERROR: launcher rejected a PacketSchemaReader hook; client field trace disabled");
+        return false;
+    }
+    clearClientSchemaTrace();
+    schemaTraceEnabled.store(true, std::memory_order_release);
+    logLine("installed PacketSchemaReader runtime field trace");
+    return true;
 }
 
 bool installStreamProbe(const MinecraftImage& image) {
@@ -258,6 +328,7 @@ void installPacketHooks() {
 
     const bool byteTraceProbe = installStreamProbe(image);
     const bool packetEndProbe = installPacketEndProbe(image);
+    const bool schemaProbe = installClientSchemaProbe(image);
     const bool streamProbe = byteTraceProbe || packetEndProbe;
     const bool warningHook = installViolationHook(image);
     if (!warningHook) {
@@ -267,13 +338,17 @@ void installPacketHooks() {
     }
 
     runtimeState().setHookStatus(
-            packetEndProbe && byteTraceProbe
+            packetEndProbe && byteTraceProbe && schemaProbe
+                    ? "active: violation + boundary + byte/field trace"
+                    : packetEndProbe && byteTraceProbe
                     ? "active: violation + exact packet boundary + byte trace"
                     : streamProbe ? "active: violation + partial stream trace"
                                   : "active: violation only",
             true, streamProbe);
     recordLifecycleEvent(
-            "hook_ready", packetEndProbe && byteTraceProbe
+            "hook_ready", packetEndProbe && byteTraceProbe && schemaProbe
+                    ? "packet violations, packet boundaries, byte tracing, and client field tracing active"
+                    : packetEndProbe && byteTraceProbe
                     ? "packet violations, exact packet boundaries, and byte tracing active"
                     : streamProbe
                     ? "packet violations and partial stream tracing active"

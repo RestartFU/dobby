@@ -1,5 +1,6 @@
 #include "core/config.hpp"
 #include "core/runtime_state.hpp"
+#include "diagnostics/client_schema_trace.hpp"
 #include "diagnostics/report_builder.hpp"
 #include "diagnostics/stream_probe.hpp"
 #include "diagnostics/violation_decoder.hpp"
@@ -78,8 +79,7 @@ void testStreamProbeAndReport() {
 
     dobby::ViolationRecord record{0, 2, 50, "read incomplete", "short"};
     auto diagnostic = dobby::buildDiagnostic(record, std::move(failure), "unit test");
-    assert(diagnostic.report.find("Decode failure: truncated field at stream byte 4") != std::string::npos);
-    assert(diagnostic.report.find("InventorySlot: container_id") != std::string::npos);
+    assert(diagnostic.report.find("Decode: ReadOnlyBinaryStream::read") != std::string::npos);
     assert(diagnostic.json.find("\"offset\":4") != std::string::npos);
     assert(dobby::rawPacketHex(diagnostic) == "01 02 03 04 aa bb");
 
@@ -95,7 +95,7 @@ void testStreamProbeAndReport() {
     assert(correlated->attempts.size() == 2);
     auto correlatedDiagnostic = dobby::buildDiagnostic(
             record, std::move(correlated), "unit test");
-    assert(correlatedDiagnostic.report.find("Decode boundary: not observed") != std::string::npos);
+    assert(correlatedDiagnostic.report.find("Decode boundary: unconfirmed") != std::string::npos);
     assert(correlatedDiagnostic.json.find("\"overflow_observed\":false") != std::string::npos);
 
     dobby::clearStreamProbe();
@@ -107,10 +107,37 @@ void testStreamProbeAndReport() {
     assert(trailing->failureOffset == 4);
     assert(trailing->available == 2);
     auto trailingDiagnostic = dobby::buildDiagnostic(record, std::move(trailing), "unit test");
-    assert(trailingDiagnostic.report.find("Decode failure: unexpected trailing bytes") != std::string::npos);
-    assert(trailingDiagnostic.report.find("Client expected: end of InventorySlot at stream byte 4") != std::string::npos);
-    assert(trailingDiagnostic.report.find("Server supplied: 2 unexpected byte(s)") != std::string::npos);
-    assert(trailingDiagnostic.json.find("\"kind\":\"unexpected_trailing_bytes\"") != std::string::npos);
+    assert(trailingDiagnostic.report.find("Decode: ReadOnlyBinaryStream::ensureReadCompleted") != std::string::npos);
+    assert(trailingDiagnostic.report.find("_read: success | cursor 4/6 | remaining 2 | overflow no") != std::string::npos);
+    assert(trailingDiagnostic.json.find("\"kind\":\"unconsumed_trailing_bytes\"") != std::string::npos);
+    assert(trailingDiagnostic.report.find("INFER") == std::string::npos);
+    assert(trailingDiagnostic.report.find("Likely") == std::string::npos);
+    assert(trailingDiagnostic.json.find("expected_schema") == std::string::npos);
+    assert(trailingDiagnostic.json.find("inferred_divergence") == std::string::npos);
+}
+
+void testClientSchemaFieldTrace() {
+    const std::array<std::uint8_t, 2> body{0xaa, 0xbb};
+    std::array<std::byte, 0x48> stream{};
+    store<const std::uint8_t*>(stream.data() + dobby::kStreamViewDataOffset, body.data());
+    store<std::size_t>(stream.data() + dobby::kStreamViewSizeOffset, body.size());
+
+    dobby::clearStreamProbe();
+    dobby::pushClientSchemaMember("item");
+    dobby::pushClientSchemaMember("stackNetworkId");
+    dobby::captureStreamReadAttempt(stream.data(), 1, 2048);
+    dobby::popClientSchemaContext();
+    dobby::popClientSchemaContext();
+    store<std::size_t>(stream.data() + dobby::kStreamReadPointerOffset, 1);
+    dobby::captureStreamReadAttempt(stream.data(), 2, 2048);
+
+    auto failure = dobby::recentStreamFailure(std::chrono::seconds(1));
+    assert(failure);
+    assert(failure->attempts.front().clientField == "item.stackNetworkId");
+    assert(failure->attempts.back().clientField.empty());
+    auto diagnostic = dobby::buildDiagnostic(
+            {0, 2, 50, "read incomplete", "short"}, std::move(failure), "unit test");
+    assert(diagnostic.json.find("\"client_field\":\"item.stackNetworkId\"") != std::string::npos);
 }
 
 void testRepeatViolationsAreRetained() {
@@ -125,38 +152,6 @@ void testRepeatViolationsAreRetained() {
     assert(snapshot.totalViolations == 2);
     assert(snapshot.retainedViolations == 2);
     state.clearDiagnostics();
-}
-
-void testInferredTaggedStackNetworkId() {
-    const std::array<std::uint8_t, 45> bytes{
-            0x32, 0x00, 0x00, 0x00, 0x00, 0xe3, 0x09, 0x01,
-            0x00, 0x00, 0x01, 0x00, 0x9e, 0xe1, 0x11, 0x00,
-            0x1c, 0xff, 0xff, 0x01, 0x0a, 0x00, 0x00, 0x03,
-            0x06, 0x00, 0x44, 0x61, 0x6d, 0x61, 0x67, 0x65,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00};
-    dobby::StreamFailure failure;
-    failure.viewSize = bytes.size();
-    failure.failureOffset = 16;
-    failure.available = 29;
-    failure.rawBytes.assign(bytes.begin(), bytes.end());
-    failure.attempts.push_back({16, 0, 29, false});
-
-    dobby::ViolationRecord record{
-            0, 2, 50,
-            "BinaryStream read() incomplete\nreadNoHeader failed! packetId: 50", "long"};
-    const auto diagnostic = dobby::buildDiagnostic(record, std::move(failure), "unit test");
-    assert(diagnostic.inferredDivergence);
-    assert(diagnostic.inferredDivergence->offset == 10);
-    assert(diagnostic.inferredDivergence->clientVariantValue == -1);
-    assert(diagnostic.inferredDivergence->clientLengthValue == 290974);
-    assert(diagnostic.inferredDivergence->bytesAfterDeclaredLength == 30);
-    assert(diagnostic.report.find("INFERRED DIVERGENCE\nOffset: 0x0A") != std::string::npos);
-    assert(diagnostic.report.find("Likely cause: obsolete tagged StackNetworkID encoding") != std::string::npos);
-    assert(diagnostic.report.find("01 00 9e e1 11") != std::string::npos);
-    assert(diagnostic.report.find("item-user-data length = 290974") != std::string::npos);
-    assert(diagnostic.report.find("16->16 (1x0B; zero-length read, not confirmed failure)") != std::string::npos);
-    assert(diagnostic.json.find("\"inferred_divergence\":{\"offset\":10") != std::string::npos);
 }
 
 void testConfigurationAndPacketCatalog() {
@@ -178,8 +173,8 @@ void testConfigurationAndPacketCatalog() {
 int main() {
     testViolationDecoder();
     testStreamProbeAndReport();
+    testClientSchemaFieldTrace();
     testRepeatViolationsAreRetained();
-    testInferredTaggedStackNetworkId();
     testConfigurationAndPacketCatalog();
     std::cout << "Dobby tests passed\n";
 }
