@@ -1,0 +1,67 @@
+#include "diagnostics/violation_decoder.hpp"
+
+#include <cstdint>
+#include <cstring>
+#include <string_view>
+
+namespace dobby {
+namespace {
+
+template <class T>
+T readUnaligned(const std::byte* address) {
+    T value{};
+    std::memcpy(&value, address, sizeof(value));
+    return value;
+}
+
+struct AndroidStringView {
+    std::string_view value;
+    const char* storage;
+};
+
+std::optional<AndroidStringView> readAndroidString(const std::byte* object) {
+    const auto tag = readUnaligned<std::uint8_t>(object);
+    if ((tag & 1U) == 0U) {
+        const auto length = static_cast<std::size_t>(tag >> 1U);
+        return AndroidStringView{
+                std::string_view(reinterpret_cast<const char*>(object + 1), length), "short"};
+    }
+
+    const auto length = readUnaligned<std::size_t>(object + 8);
+    const auto data = readUnaligned<const char*>(object + 16);
+    if (data == nullptr || length > kMaximumContextLength)
+        return std::nullopt;
+    return AndroidStringView{std::string_view(data, length), "long"};
+}
+
+} // namespace
+
+std::optional<ViolationRecord> decodeViolation(const void* packet) {
+    if (packet == nullptr)
+        return std::nullopt;
+
+    const auto* bytes = static_cast<const std::byte*>(packet);
+    const auto context = readAndroidString(bytes + kViolationContextOffset);
+    if (!context)
+        return std::nullopt;
+
+    ViolationRecord result;
+    result.type = readUnaligned<std::int32_t>(bytes + kViolationTypeOffset);
+    result.severity = readUnaligned<std::int32_t>(bytes + kViolationSeverityOffset);
+    result.packetId = readUnaligned<std::int32_t>(bytes + kViolationPacketIdOffset);
+    result.context.assign(context->value);
+    result.contextStorage = context->storage;
+    return result;
+}
+
+std::string violationObjectLayout(const ViolationRecord& record) {
+    return
+            "PacketViolationWarningPacket payload @ object + 0x30\n"
+            "  +0x30  int32 violation_type     = " + std::to_string(record.type) + "\n"
+            "  +0x34  int32 violation_severity = " + std::to_string(record.severity) + "\n"
+            "  +0x38  int32 violating_packet   = " + std::to_string(record.packetId) + "\n"
+            "  +0x40  libc++ string context    = " + record.contextStorage +
+            " / " + std::to_string(record.context.size()) + " bytes\n";
+}
+
+} // namespace dobby

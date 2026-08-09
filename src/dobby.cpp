@@ -1,0 +1,41 @@
+#include "core/constants.hpp"
+#include "core/runtime_state.hpp"
+#include "hooks/packet_hooks.hpp"
+#include "platform/log.hpp"
+
+#include <atomic>
+#include <string>
+
+#if defined(__ANDROID__)
+#include "ui/developer_ui.hpp"
+#endif
+
+namespace {
+
+std::atomic_bool initialized{false};
+
+} // namespace
+
+extern "C" [[gnu::visibility("default")]] void mod_preinit() {
+    dobby::logLine("mod_preinit");
+}
+
+extern "C" [[gnu::visibility("default")]] void mod_init() {
+    dobby::logLine("mod_init");
+    if (initialized.exchange(true))
+        return;
+
+    static_cast<void>(dobby::runtimeState());
+    dobby::installPacketHooks();
+#if defined(__ANDROID__)
+    dobby::registerDeveloperUi();
+#endif
+}
+
+[[gnu::constructor]] void dobbyLoaded() {
+    static_cast<void>(dobby::runtimeState());
+    dobby::logLine(std::string("library loaded: Dobby ") + dobby::kDobbyVersion);
+    dobby::recordLifecycleEvent(
+            "session_start",
+            std::string("Minecraft ") + dobby::kMinecraftVersion + " / " + dobby::kAbi);
+}

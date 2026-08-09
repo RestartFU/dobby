@@ -1,4 +1,4 @@
-PACKET_DEBUGGER {
+DOBBY {
   global:
     mod_init;
     mod_preinit;

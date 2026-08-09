@@ -1,13 +1,13 @@
 {
   "arch": "arm64-v8a",
   "metadata": {
-    "name": "Packet Debugger",
-    "description": "Shows and copies the exact PacketViolationWarning reason behind Bedrock Error Code: Block.",
-    "url": "local",
+    "name": "Dobby",
+    "description": "Minecraft Bedrock developer client for packet violations, byte-level read traces, and raw captures.",
+    "url": "https://github.com/evc24004/dobby",
     "image": "",
     "versions": [
       {
-        "version": "1.1.0",
+        "version": "2.1.0",
         "minecraft": "= 1.26.40.5",
         "assets": {
           "arm64-v8a": "local"
@@ -24,7 +24,7 @@
     ]
   },
   "version": {
-    "version": "1.1.0",
+    "version": "2.1.0",
     "minecraft": "= 1.26.40.5",
     "minecraftVersion": "1.26.40.5",
     "assets": {

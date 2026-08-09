@@ -1,14 +1,13 @@
-# Bedrock Packet Debugger
+# Dobby
 
-Developer tool for diagnosing Minecraft Bedrock packet violations with macOS
+Compact Minecraft Bedrock developer client for macOS
 [mcpelauncher](https://github.com/minecraft-linux/mcpelauncher-manifest).
 
-It captures `PacketViolationWarningPacket`, displays the exact reason in a compact in-game window,
-and provides clipboard-ready diagnostics and JSON logs.
+It captures packet violations, the exact failed byte boundary, primitive read traces, and raw packet bytes from an in-game developer menu.
 
 ## In-game diagnostic
 
-Shows the rejected packet, violation type, exact Bedrock reason, and copyable diagnostics without leaving the game.
+`Mods > Dobby` provides the rejected packet, Bedrock reason, expected wire structure, decoder offset, hook status, copy actions, and developer toggles without leaving the game. Repeated disconnects always create a new popup.
 
 ![Packet rejection diagnostic window](media/image.png)
 
@@ -23,16 +22,20 @@ The mod validates the target signature and refuses to patch incompatible builds.
 ## Build
 
 ```sh
-cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Release
-cmake --build build-host
-ctest --test-dir build-host --output-on-failure
-
-cmake -S . -B build-android-arm64 -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-  -DANDROID_ABI=arm64-v8a \
-  -DANDROID_PLATFORM=android-23
-cmake --build build-android-arm64 --target packet_debugger
+./build.sh
 ```
 
+The default workflow runs release and sanitizer tests, builds ARM64, audits public
+content, installs the verified artifact, commits and pushes changes, then starts
+Minecraft and confirms Dobby is ready. Use `./build.sh --local` for a build-only
+iteration or `./build.sh --help` for individual opt-outs.
+
 Logs default to `~/Library/Application Support/mcpelauncher/`. Set
-`PACKET_DEBUGGER_OUTPUT_DIR` to override the output directory.
+`DOBBY_OUTPUT_DIR` to override the output directory. Optional configuration:
+
+- `DOBBY_AUTO_POPUP=0` disables automatic violation popups.
+- `DOBBY_VERBOSE=1` enables verbose developer events.
+- `DOBBY_HISTORY_LIMIT=100` sets the bounded in-memory history size.
+- `DOBBY_RAW_CAPTURE_LIMIT=2048` sets the maximum captured packet-body bytes.
+
+Raw captures and logs may contain server-provided data and remain excluded from Git.

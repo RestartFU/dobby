@@ -1,0 +1,21 @@
+#pragma once
+
+#include <cstdint>
+#include <span>
+#include <string>
+#include <string_view>
+
+namespace dobby {
+
+std::string timestamp();
+std::string jsonEscape(std::string_view value);
+std::string hexBytes(std::span<const std::uint8_t> bytes);
+bool writeFile(std::string_view path, std::string_view text, std::string_view mode);
+void ensureOutputDirectory();
+
+const std::string& logPath();
+const std::string& eventPath();
+const std::string& latestPath();
+const std::string& clipboardPath();
+
+} // namespace dobby
