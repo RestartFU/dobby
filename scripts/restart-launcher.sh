@@ -4,6 +4,7 @@ set -eu
 bundle_id=io.mrarm.mcpelauncher.ui
 profiles_path="$HOME/Library/Application Support/mcpelauncher/profiles/profiles.ini"
 log_path="$HOME/Library/Application Support/mcpelauncher/dobby.log"
+client_pattern='^/Applications/Minecraft Bedrock Launcher.app/Contents/MacOS/(\./)?mcpelauncher-client-arm64-v8a '
 before_lines=0
 [ ! -f "$log_path" ] || before_lines=$(wc -l < "$log_path" | tr -d ' ')
 
@@ -21,6 +22,17 @@ fi
 }
 
 osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
+pkill -TERM -f "$client_pattern" 2>/dev/null || true
+attempt=0
+while pgrep -f "$client_pattern" >/dev/null 2>&1 && [ "$attempt" -lt 10 ]; do
+    sleep 1
+    attempt=$((attempt + 1))
+done
+if pgrep -f "$client_pattern" >/dev/null 2>&1; then
+    echo "error: existing Minecraft client did not stop cleanly" >&2
+    exit 1
+fi
+
 sleep 1
 open -n -b "$bundle_id" --args --profile "$profile"
 echo "Started launcher profile: $profile"
@@ -30,8 +42,23 @@ while [ "$attempt" -lt 45 ]; do
     if [ -f "$log_path" ]; then
         new_log=$(tail -n "+$((before_lines + 1))" "$log_path")
         if printf '%s\n' "$new_log" | grep -q 'READY: Dobby'; then
+            client_pid=$(pgrep -f "$client_pattern" | tail -1)
+            [ -n "$client_pid" ] || {
+                echo "error: Dobby reported READY but the Minecraft client already exited" >&2
+                exit 1
+            }
+            stable=0
+            while [ "$stable" -lt 10 ]; do
+                kill -0 "$client_pid" 2>/dev/null || {
+                    echo "error: Minecraft crashed during the Dobby stability check" >&2
+                    exit 1
+                }
+                sleep 1
+                stable=$((stable + 1))
+            done
             printf '%s\n' "$new_log" | grep -E \
                 'library loaded: Dobby|installed ReadOnlyBinaryStream|installed PacketViolationWarningPacket|READY: Dobby|registered Mods > Dobby'
+            echo "Minecraft client $client_pid remained stable for 10 seconds after READY."
             exit 0
         fi
     fi

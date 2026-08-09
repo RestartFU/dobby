@@ -6,7 +6,7 @@
 
 namespace dobby {
 
-inline constexpr char kDobbyVersion[] = "2.1.0";
+inline constexpr char kDobbyVersion[] = "2.1.3";
 inline constexpr char kMinecraftVersion[] = "1.26.40.5";
 inline constexpr char kMinecraftBuildId[] = "5893edc8d56c93cbdb50e0f9436320236b78c89d";
 inline constexpr char kAbi[] = "arm64-v8a";
@@ -26,8 +26,14 @@ inline constexpr std::array<std::uint8_t, 8> kViolationGetIdSignature{
 
 inline constexpr std::uintptr_t kStreamReadOffset = 0x11a7b044;
 inline constexpr std::uintptr_t kStreamReadVtableSlotOffset = 0x1249dac8;
-inline constexpr std::array<std::uint8_t, 8> kStreamReadSignature{
-        0xff, 0x83, 0x04, 0xd1, 0xfd, 0x7b, 0x0e, 0xa9};
+inline constexpr std::array<std::uint8_t, 16> kStreamReadSignature{
+        0xff, 0x83, 0x04, 0xd1, 0xfd, 0x7b, 0x0e, 0xa9,
+        0xfc, 0x7b, 0x00, 0xf9, 0xf6, 0x57, 0x10, 0xa9};
+
+inline constexpr std::uintptr_t kPacketEndCheckOffset = 0x11a7adb4;
+inline constexpr std::array<std::uint8_t, 16> kPacketEndCheckSignature{
+        0xff, 0x43, 0x02, 0xd1, 0xfd, 0x7b, 0x06, 0xa9,
+        0xf5, 0x3b, 0x00, 0xf9, 0xf4, 0x4f, 0x08, 0xa9};
 
 } // namespace target
 } // namespace dobby

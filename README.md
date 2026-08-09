@@ -3,7 +3,7 @@
 Compact Minecraft Bedrock developer client for macOS
 [mcpelauncher](https://github.com/minecraft-linux/mcpelauncher-manifest).
 
-It captures packet violations, the exact failed byte boundary, primitive read traces, and raw packet bytes from an in-game developer menu.
+It captures packet violations, Bedrock's exact packet-end or truncated-read boundary, primitive read traces, and raw packet bytes from an in-game developer menu.
 
 ## In-game diagnostic
 

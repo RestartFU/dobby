@@ -2,6 +2,7 @@
 
 #include "core/config.hpp"
 #include "core/constants.hpp"
+#include "diagnostics/divergence_inference.hpp"
 #include "diagnostics/violation_decoder.hpp"
 #include "network/packet_names.hpp"
 #include "network/packet_schema.hpp"
@@ -22,15 +23,40 @@ std::string packetNameString(std::int32_t packetId) {
 
 std::string buildReadTrace(const StreamFailure& failure) {
     std::ostringstream output;
-    output << "Primitive read trace (oldest retained -> failure):\n";
-    for (std::size_t index = 0; index < failure.attempts.size(); ++index) {
-        const auto& attempt = failure.attempts[index];
-        output << (attempt.overflow ? "  FAIL " : "  ok   ")
-               << '#' << (index + 1)
-               << " offset=" << attempt.offset
-               << " requested=" << attempt.requested
-               << " available=" << attempt.available << '\n';
+    output << "Reads: ";
+    if (failure.attempts.empty()) {
+        output << "none\n";
+        return output.str();
     }
+
+    std::size_t index = 0;
+    while (index < failure.attempts.size()) {
+        const auto& first = failure.attempts[index];
+        std::size_t count = 1;
+        std::size_t end = first.offset + first.requested;
+        while (index + count < failure.attempts.size()) {
+            const auto& next = failure.attempts[index + count];
+            if (first.overflow || next.overflow || next.requested != first.requested ||
+                next.offset != end) {
+                break;
+            }
+            end += next.requested;
+            ++count;
+        }
+        if (index != 0)
+            output << ", ";
+        if (first.overflow) {
+            output << "FAIL@" << first.offset << "+" << first.requested;
+        } else {
+            output << first.offset << "->" << end << " (" << count << "x"
+                   << first.requested << "B";
+            if (first.requested == 0)
+                output << "; zero-length read, not confirmed failure";
+            output << ')';
+        }
+        index += count;
+    }
+    output << '\n';
     return output.str();
 }
 
@@ -73,6 +99,13 @@ std::string buildJson(const Diagnostic& diagnostic) {
         json +=
                 ",\"decode_failure\":{\"offset\":" + std::to_string(failure.failureOffset) +
                 ",\"stream_size\":" + std::to_string(failure.viewSize) +
+                ",\"kind\":\"" +
+                (failure.packetEndMismatch ? "unexpected_trailing_bytes" :
+                 failure.overflowObserved ? "primitive_overflow" : "correlated_trace") +
+                "\",\"client_expected\":\"" +
+                (failure.packetEndMismatch ? "end_of_packet" : "more_field_data") +
+                "\"" +
+                ",\"overflow_observed\":" + (failure.overflowObserved ? "true" : "false") +
                 ",\"requested\":" + std::to_string(failure.requested) +
                 ",\"available\":" + std::to_string(failure.available) +
                 ",\"overflow_before_read\":" + (failure.overflowBeforeRead ? "true" : "false") +
@@ -94,6 +127,25 @@ std::string buildJson(const Diagnostic& diagnostic) {
         json += ",\"decode_failure\":null";
     }
 
+    if (diagnostic.inferredDivergence) {
+        const auto& inference = *diagnostic.inferredDivergence;
+        json +=
+                ",\"inferred_divergence\":{\"offset\":" +
+                std::to_string(inference.offset) +
+                ",\"likely_cause\":\"" + jsonEscape(inference.likelyCause) +
+                "\",\"observed_hex\":\"" + jsonEscape(inference.observedHex) +
+                "\",\"intended_signed_value\":" +
+                std::to_string(inference.intendedSignedValue) +
+                ",\"client_variant_value\":" +
+                std::to_string(inference.clientVariantValue) +
+                ",\"client_length_value\":" +
+                std::to_string(inference.clientLengthValue) +
+                ",\"bytes_after_declared_length\":" +
+                std::to_string(inference.bytesAfterDeclaredLength) + "}";
+    } else {
+        json += ",\"inferred_divergence\":null";
+    }
+
     json +=
             std::string(",\"minecraft_version\":\"") + kMinecraftVersion +
             "\",\"libminecraftpe_build_id\":\"" + kMinecraftBuildId + "\"}";
@@ -101,55 +153,62 @@ std::string buildJson(const Diagnostic& diagnostic) {
 }
 
 std::string buildReport(const Diagnostic& diagnostic) {
-    ViolationRecord record{
-            diagnostic.type, diagnostic.severity, diagnostic.packetId,
-            diagnostic.context, diagnostic.contextStorage};
     std::string report =
-            "DOBBY PACKET DIAGNOSTIC\n\n"
-            "Captured: " + diagnostic.capturedAt + "\n"
-            "Direction: remote server -> this client\n"
-            "Intercept: " + diagnostic.intercept + "\n\n"
-            "VIOLATION\n"
-            "Type: " + violationTypeName(diagnostic.type) +
-            " (" + std::to_string(diagnostic.type) + ")\n"
-            "Severity: " + severityName(diagnostic.severity) +
-            " (" + std::to_string(diagnostic.severity) + ")\n"
-            "Packet: " + packetNameString(diagnostic.packetId) +
-            " / " + std::to_string(diagnostic.packetId) +
-            " / " + packetIdHex(diagnostic.packetId) + "\n"
-            "Reason: " + diagnostic.context + "\n\n"
-            "EXPECTED WIRE STRUCTURE\n" + std::string(packetWireSchema(diagnostic.packetId)) + "\n\n";
+            "DOBBY PACKET DIAGNOSTIC\n"
+            + diagnostic.capturedAt + " | server -> client\n\n"
+            + packetNameString(diagnostic.packetId) + " (" +
+            std::to_string(diagnostic.packetId) + " / " +
+            packetIdHex(diagnostic.packetId) + ")\n" +
+            violationTypeName(diagnostic.type) + " / " + severityName(diagnostic.severity) +
+            "\n" + diagnostic.context + "\n\n";
 
     if (diagnostic.streamFailure) {
         const auto& failure = *diagnostic.streamFailure;
-        report +=
-                "EXACT DECODE BOUNDARY\n"
-                "Decoder stopped at body byte " + std::to_string(failure.failureOffset) +
-                " of " + std::to_string(failure.viewSize) + ".\n"
-                "It requested " + std::to_string(failure.requested) +
-                " byte(s), but only " + std::to_string(failure.available) + " remained.\n"
-                "This is the first primitive read that could not be satisfied.\n\n" +
-                buildReadTrace(failure) + "\n"
-                "RAW READONLYBINARYSTREAM VIEW\n" + buildHexDump(failure) + "\n";
+        if (failure.packetEndMismatch) {
+            report +=
+                    "Decode failure: unexpected trailing bytes\n"
+                    "Client expected: end of " + packetNameString(diagnostic.packetId) +
+                    " at stream byte " + std::to_string(failure.failureOffset) + "\n"
+                    "Server supplied: " + std::to_string(failure.available) +
+                    " unexpected byte(s) after that point (" +
+                    std::to_string(failure.viewSize) + "B total)\n" +
+                    buildReadTrace(failure) +
+                    "Expected structure: " +
+                    std::string(packetWireSchema(diagnostic.packetId)) + "\n"
+                    "Raw packet stream ('>' marks the first unexpected byte):\n" +
+                    buildHexDump(failure) + "\n";
+        } else if (failure.overflowObserved) {
+            report +=
+                    "Decode failure: truncated field at stream byte " +
+                    std::to_string(failure.failureOffset) + "\n"
+                    "Client expected: " + std::to_string(failure.requested) +
+                    " byte(s); server supplied " + std::to_string(failure.available) +
+                    " byte(s)\n";
+            report +=
+                    "Expected structure: " +
+                    std::string(packetWireSchema(diagnostic.packetId)) + "\n"
+                    "Raw packet stream ('>' marks failure):\n" + buildHexDump(failure) + "\n";
+        } else {
+            report +=
+                    "Decode boundary: not observed; last correlated cursor was stream byte " +
+                    std::to_string(failure.failureOffset) + "\n" +
+                    buildReadTrace(failure) +
+                    "Expected structure: " +
+                    std::string(packetWireSchema(diagnostic.packetId)) + "\n"
+                    "Raw packet stream ('>' marks cursor):\n" + buildHexDump(failure) + "\n";
+        }
     } else {
         report +=
-                "EXACT DECODE BOUNDARY\n"
-                "No recent ReadOnlyBinaryStream overflow was available. The stream probe may be unavailable, "
-                "the failure may not be a short read, or the warning arrived outside the correlation window.\n\n";
+                "Decode: no correlated stream trace\n"
+                "Expected: " + std::string(packetWireSchema(diagnostic.packetId)) + "\n\n";
     }
 
+    if (diagnostic.inferredDivergence)
+        report += formatInferredDivergence(*diagnostic.inferredDivergence) + "\n";
+
     report +=
-            "WARNING PACKET OBJECT LAYOUT\n" + violationObjectLayout(record) + "\n"
-            "CLIENT TARGET\n"
-            "Dobby: " + kDobbyVersion + "\n"
-            "Minecraft Android: " + kMinecraftVersion + "\n"
-            "ABI: " + kAbi + "\n"
-            "libminecraftpe build ID: " + kMinecraftBuildId + "\n\n"
-            "FILES\n"
-            "Log: " + logPath() + "\n"
-            "JSONL events: " + eventPath() + "\n"
-            "Latest: " + latestPath() + "\n\n"
-            "RAW JSON\n" + diagnostic.json + "\n";
+            std::string("Dobby ") + kDobbyVersion + " | Minecraft " + kMinecraftVersion +
+            " | " + kAbi + "\n";
     return report;
 }
 
@@ -191,6 +250,8 @@ Diagnostic buildDiagnostic(
     result.contextStorage = record.contextStorage;
     result.intercept = std::move(intercept);
     result.streamFailure = std::move(streamFailure);
+    if (result.streamFailure)
+        result.inferredDivergence = inferDivergence(result.packetId, *result.streamFailure);
     result.json = buildJson(result);
     result.report = buildReport(result);
     return result;
@@ -222,14 +283,27 @@ std::string rawPacketHex(const Diagnostic& diagnostic) {
 }
 
 std::string streamFailureSummary(const Diagnostic& diagnostic) {
+    if (diagnostic.inferredDivergence)
+        return summarizeInferredDivergence(*diagnostic.inferredDivergence);
     if (!diagnostic.streamFailure)
         return "Decode boundary unavailable";
     const auto& failure = *diagnostic.streamFailure;
+    if (failure.packetEndMismatch) {
+        return
+                "Client expected packet end at byte " +
+                std::to_string(failure.failureOffset) + "  -  " +
+                std::to_string(failure.available) + " unexpected trailing bytes";
+    }
+    if (failure.overflowObserved) {
+        return
+                "Decode failed at byte " + std::to_string(failure.failureOffset) +
+                " / " + std::to_string(failure.viewSize) +
+                "  -  needed " + std::to_string(failure.requested) +
+                ", had " + std::to_string(failure.available);
+    }
     return
-            "Decode failed at byte " + std::to_string(failure.failureOffset) +
-            " / " + std::to_string(failure.viewSize) +
-            "  -  needed " + std::to_string(failure.requested) +
-            ", had " + std::to_string(failure.available);
+            "Decode trace retained at byte " + std::to_string(failure.failureOffset) +
+            " / " + std::to_string(failure.viewSize) + "  -  no overflow observed";
 }
 
 } // namespace dobby

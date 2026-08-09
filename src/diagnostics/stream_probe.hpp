@@ -25,6 +25,7 @@ struct StreamView {
 
 std::optional<StreamView> inspectStream(const void* stream);
 void captureStreamReadAttempt(const void* stream, std::size_t requested, std::size_t rawCaptureLimit);
+void capturePacketEndCheck(const void* stream, std::size_t rawCaptureLimit);
 std::optional<StreamFailure> recentStreamFailure(std::chrono::milliseconds maximumAge);
 void clearStreamProbe();
 

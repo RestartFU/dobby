@@ -8,6 +8,16 @@
 
 namespace dobby {
 
+struct InferredDivergence {
+    std::size_t offset{};
+    std::string likelyCause;
+    std::string observedHex;
+    std::int64_t intendedSignedValue{};
+    std::int64_t clientVariantValue{};
+    std::uint64_t clientLengthValue{};
+    std::size_t bytesAfterDeclaredLength{};
+};
+
 struct ViolationRecord {
     std::int32_t type{};
     std::int32_t severity{};
@@ -24,6 +34,8 @@ struct StreamReadAttempt {
 };
 
 struct StreamFailure {
+    bool overflowObserved{};
+    bool packetEndMismatch{};
     std::size_t viewSize{};
     std::size_t failureOffset{};
     std::size_t requested{};
@@ -43,6 +55,7 @@ struct Diagnostic {
     std::string contextStorage;
     std::string intercept;
     std::optional<StreamFailure> streamFailure;
+    std::optional<InferredDivergence> inferredDivergence;
     std::string json;
     std::string report;
 };

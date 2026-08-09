@@ -1,5 +1,7 @@
 #include "diagnostics/stream_probe.hpp"
 
+#include "core/constants.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -22,9 +24,13 @@ struct ActiveTrace {
     const std::uint8_t* data{};
     std::size_t size{};
     std::size_t previousOffset{};
+    std::array<std::uint8_t, kMaximumRawCaptureLimit> rawBytes{};
+    std::size_t rawSize{};
+    bool rawBytesTruncated{};
     std::array<StreamReadAttempt, kMaximumTraceAttempts> attempts{};
     std::size_t attemptCount{};
     std::size_t nextAttempt{};
+    std::chrono::steady_clock::time_point lastObservedAt{};
 };
 
 struct TimedFailure {
@@ -36,13 +42,42 @@ thread_local ActiveTrace activeTrace;
 std::mutex failureMutex;
 std::optional<TimedFailure> lastFailure;
 
-void resetTrace(const void* stream, const StreamView& view) {
+void resetTrace(const void* stream, const StreamView& view, std::size_t rawCaptureLimit) {
     activeTrace.stream = stream;
     activeTrace.data = view.data;
     activeTrace.size = view.size;
     activeTrace.previousOffset = view.readPointer;
+    activeTrace.rawSize = std::min({view.size, rawCaptureLimit, kMaximumRawCaptureLimit});
+    std::memcpy(activeTrace.rawBytes.data(), view.data, activeTrace.rawSize);
+    activeTrace.rawBytesTruncated = activeTrace.rawSize < view.size;
     activeTrace.attemptCount = 0;
     activeTrace.nextAttempt = 0;
+}
+
+StreamFailure snapshotTrace(bool overflowObserved) {
+    StreamFailure snapshot;
+    snapshot.overflowObserved = overflowObserved;
+    snapshot.viewSize = activeTrace.size;
+    snapshot.rawBytes.assign(
+            activeTrace.rawBytes.begin(), activeTrace.rawBytes.begin() + activeTrace.rawSize);
+    snapshot.rawBytesTruncated = activeTrace.rawBytesTruncated;
+
+    const std::size_t first =
+            (activeTrace.nextAttempt + kMaximumTraceAttempts - activeTrace.attemptCount) %
+            kMaximumTraceAttempts;
+    snapshot.attempts.reserve(activeTrace.attemptCount);
+    for (std::size_t index = 0; index < activeTrace.attemptCount; ++index) {
+        snapshot.attempts.push_back(
+                activeTrace.attempts[(first + index) % kMaximumTraceAttempts]);
+    }
+    if (!snapshot.attempts.empty()) {
+        const auto& last = snapshot.attempts.back();
+        snapshot.failureOffset = last.offset;
+        snapshot.requested = last.requested;
+        snapshot.available = last.available;
+        snapshot.overflowBeforeRead = last.overflow;
+    }
+    return snapshot;
 }
 
 } // namespace
@@ -70,7 +105,7 @@ void captureStreamReadAttempt(const void* stream, std::size_t requested, std::si
 
     if (activeTrace.stream != stream || activeTrace.data != view->data ||
         activeTrace.size != view->size || view->readPointer < activeTrace.previousOffset) {
-        resetTrace(stream, *view);
+        resetTrace(stream, *view, rawCaptureLimit);
     }
 
     const std::size_t available = view->size - view->readPointer;
@@ -80,39 +115,64 @@ void captureStreamReadAttempt(const void* stream, std::size_t requested, std::si
     activeTrace.nextAttempt = (activeTrace.nextAttempt + 1) % kMaximumTraceAttempts;
     activeTrace.attemptCount = std::min(activeTrace.attemptCount + 1, kMaximumTraceAttempts);
     activeTrace.previousOffset = view->readPointer;
+    activeTrace.lastObservedAt = std::chrono::steady_clock::now();
 
     if (!overflow)
         return;
 
-    StreamFailure failure;
-    failure.viewSize = view->size;
+    StreamFailure failure = snapshotTrace(true);
     failure.failureOffset = view->readPointer;
     failure.requested = requested;
     failure.available = available;
     failure.overflowBeforeRead = view->overflowed;
-    const std::size_t captureSize = std::min(view->size, rawCaptureLimit);
-    failure.rawBytes.assign(view->data, view->data + captureSize);
-    failure.rawBytesTruncated = captureSize < view->size;
-    failure.attempts.reserve(activeTrace.attemptCount);
-    const std::size_t first =
-            (activeTrace.nextAttempt + kMaximumTraceAttempts - activeTrace.attemptCount) %
-            kMaximumTraceAttempts;
-    for (std::size_t index = 0; index < activeTrace.attemptCount; ++index) {
-        failure.attempts.push_back(
-                activeTrace.attempts[(first + index) % kMaximumTraceAttempts]);
+
+    std::lock_guard lock(failureMutex);
+    lastFailure = TimedFailure{std::move(failure), std::chrono::steady_clock::now()};
+}
+
+void capturePacketEndCheck(const void* stream, std::size_t rawCaptureLimit) {
+    const auto view = inspectStream(stream);
+    if (!view || (!view->overflowed && view->readPointer == view->size))
+        return;
+
+    if (activeTrace.stream != stream || activeTrace.data != view->data ||
+        activeTrace.size != view->size || view->readPointer < activeTrace.previousOffset) {
+        resetTrace(stream, *view, rawCaptureLimit);
     }
+
+    activeTrace.previousOffset = view->readPointer;
+    activeTrace.lastObservedAt = std::chrono::steady_clock::now();
+    StreamFailure failure = snapshotTrace(view->overflowed);
+    failure.packetEndMismatch = !view->overflowed && view->readPointer < view->size;
+    failure.failureOffset = view->readPointer;
+    failure.requested = 0;
+    failure.available = view->size - view->readPointer;
+    failure.overflowBeforeRead = view->overflowed;
 
     std::lock_guard lock(failureMutex);
     lastFailure = TimedFailure{std::move(failure), std::chrono::steady_clock::now()};
 }
 
 std::optional<StreamFailure> recentStreamFailure(std::chrono::milliseconds maximumAge) {
-    std::lock_guard lock(failureMutex);
-    if (!lastFailure || std::chrono::steady_clock::now() - lastFailure->capturedAt > maximumAge)
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard lock(failureMutex);
+        if (lastFailure && now - lastFailure->capturedAt <= maximumAge) {
+            auto result = std::move(lastFailure->failure);
+            lastFailure.reset();
+            return result;
+        }
+        if (lastFailure)
+            lastFailure.reset();
+    }
+
+    // PacketViolationWarningPacket::getId runs on the decode/send thread. If
+    // Bedrock reports the error after unwinding past the primitive that caused
+    // it, preserve that thread's most recent bounded trace without pretending
+    // an exact overflow was observed.
+    if (activeTrace.attemptCount == 0 || now - activeTrace.lastObservedAt > maximumAge)
         return std::nullopt;
-    auto result = std::move(lastFailure->failure);
-    lastFailure.reset();
-    return result;
+    return snapshotTrace(false);
 }
 
 void clearStreamProbe() {

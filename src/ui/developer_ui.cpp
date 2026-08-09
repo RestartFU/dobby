@@ -16,7 +16,7 @@
 namespace dobby {
 namespace {
 
-constexpr char kViolationWindowTitle[] = "Packet rejected##dobby_violation_v2";
+constexpr char kViolationWindowTitle[] = "Dobby##dobby_violation_v3";
 constexpr char kStatusWindowTitle[] = "Dobby##dobby_status_v2";
 
 bool menuUnselected(void*) { return false; }
@@ -38,15 +38,6 @@ void copyLatestReport(void*) {
         return;
     }
     logCopyResult(copyToClipboard(diagnostic->report), "full diagnostic");
-}
-
-void copyLatestReason(void*) {
-    const auto diagnostic = runtimeState().latestDiagnostic();
-    if (!diagnostic) {
-        logLine("UI: no packet reason is available to copy");
-        return;
-    }
-    logCopyResult(copyToClipboard(diagnostic->context), "exact reason");
 }
 
 void copyLatestJson(void*) {
@@ -140,23 +131,19 @@ void showLatestViolation(void*) {
     }
 
     const std::string packet =
-            std::string(packetName(diagnostic->packetId)) + "  -  ID " +
-            std::to_string(diagnostic->packetId) + " / " + packetIdHex(diagnostic->packetId);
+            std::string(packetName(diagnostic->packetId)) + " (" +
+            std::to_string(diagnostic->packetId) + " / " + packetIdHex(diagnostic->packetId) + ")";
     const std::string status =
-            std::string(violationTypeName(diagnostic->type)) + " (" +
-            std::to_string(diagnostic->type) + ")  -  " + severityName(diagnostic->severity) +
-            " (" + std::to_string(diagnostic->severity) + ")";
-    const std::string reason = "EXACT BEDROCK REASON\n" + diagnostic->context;
+            std::string(violationTypeName(diagnostic->type)) + " / " +
+            severityName(diagnostic->severity);
     const std::string boundary = streamFailureSummary(*diagnostic);
-    std::array<LauncherControl, 8> controls{
-            textControl("SERVER PACKET REJECTED", 2),
-            textControl(packet.c_str(), 1),
+    std::array<LauncherControl, 6> controls{
+            textControl(packet.c_str(), 2),
             textControl(status.c_str(), 1),
-            textControl(reason.c_str(), 1),
+            textControl(diagnostic->context.c_str(), 1),
             textControl(boundary.c_str(), 1),
-            buttonControl("Copy full diagnostic", copyLatestReport),
-            buttonControl("Copy raw packet bytes", copyLatestRawPacket),
-            buttonControl("Copy exact reason", copyLatestReason),
+            buttonControl("Copy report", copyLatestReport),
+            buttonControl("Copy raw bytes", copyLatestRawPacket),
     };
 
     // Non-modal avoids the launcher's persistent full-screen dim layer on close.
@@ -175,11 +162,10 @@ void registerDeveloperUi() {
         return;
     }
 
-    static std::array<LauncherMenuEntry, 9> subentries{
+    static std::array<LauncherMenuEntry, 8> subentries{
             LauncherMenuEntry{"Developer status", nullptr, menuUnselected, showDeveloperStatus, 0, nullptr},
             LauncherMenuEntry{"Show last violation", nullptr, menuUnselected, showLatestViolation, 0, nullptr},
-            LauncherMenuEntry{"Copy full diagnostic", nullptr, menuUnselected, copyLatestReport, 0, nullptr},
-            LauncherMenuEntry{"Copy exact reason", nullptr, menuUnselected, copyLatestReason, 0, nullptr},
+            LauncherMenuEntry{"Copy diagnostic", nullptr, menuUnselected, copyLatestReport, 0, nullptr},
             LauncherMenuEntry{"Copy raw packet bytes", nullptr, menuUnselected, copyLatestRawPacket, 0, nullptr},
             LauncherMenuEntry{"Copy raw JSON", nullptr, menuUnselected, copyLatestJson, 0, nullptr},
             LauncherMenuEntry{"Clear session history", nullptr, menuUnselected, clearHistory, 0, nullptr},

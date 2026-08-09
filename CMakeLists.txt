@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(DOBBY_COMMON_SOURCES
     src/core/config.cpp
     src/core/runtime_state.cpp
+    src/diagnostics/divergence_inference.cpp
     src/diagnostics/report_builder.cpp
     src/diagnostics/stream_probe.cpp
     src/diagnostics/violation_decoder.cpp
