@@ -6,7 +6,7 @@
 
 namespace dobby {
 
-inline constexpr char kDobbyVersion[] = "2.3.5";
+inline constexpr char kDobbyVersion[] = "2.5.5";
 inline constexpr char kMinecraftVersion[] = "1.26.40.5";
 inline constexpr char kMinecraftBuildId[] = "5893edc8d56c93cbdb50e0f9436320236b78c89d";
 inline constexpr char kAbi[] = "arm64-v8a";
@@ -88,6 +88,56 @@ inline constexpr std::size_t kLevelGetPrimaryLocalPlayerVtableSlot = 77;
 // The ClientLevel primary vtable. The exact vptr check prevents calling the
 // list getter through an unexpected ILevel implementation.
 inline constexpr std::uintptr_t kClientLevelVtableOffset = 0x11ed28b0;
+
+// ILevel::getCurrentServerTick() on ClientLevel. Bedrock names this clock as
+// the server tick, but the overlay labels its measured rate as an estimate.
+inline constexpr std::uintptr_t kLevelGetCurrentServerTickOffset = 0x09ad9014;
+inline constexpr std::array<std::uint8_t, 16> kLevelGetCurrentServerTickSignature{
+        0xfd, 0x7b, 0xbf, 0xa9, 0xfd, 0x03, 0x00, 0x91,
+        0x08, 0x00, 0x40, 0xf9, 0x08, 0x41, 0x41, 0xf9};
+inline constexpr std::size_t kLevelGetCurrentServerTickVtableSlot = 81;
+
+// RakNetConnector::RakNetNetworkPeer::update() refreshes these native RTT
+// fields. The vtable slot is patched only after both target and signature
+// validation succeed.
+inline constexpr std::uintptr_t kRakNetPeerUpdateOffset = 0x0c2bda48;
+inline constexpr std::uintptr_t kRakNetPeerUpdateVtableSlotOffset = 0x120a50f0;
+inline constexpr std::array<std::uint8_t, 16> kRakNetPeerUpdateSignature{
+        0xfd, 0x7b, 0xbc, 0xa9, 0xfc, 0x5f, 0x01, 0xa9,
+        0xf6, 0x57, 0x02, 0xa9, 0xf4, 0x4f, 0x03, 0xa9};
+inline constexpr std::ptrdiff_t kRakNetPeerLastPingOffset = 0x104;
+inline constexpr std::ptrdiff_t kRakNetPeerAveragePingOffset = 0x108;
+
+// Runtime packet dispatchers are used after Bedrock's generated schemas have
+// been cached. Their shared_ptr argument contains the fully decoded packet.
+inline constexpr std::uintptr_t kLevelChunkDispatcherOffset = 0x0c2b88e4;
+inline constexpr std::uintptr_t kLevelChunkDispatcherVtableSlotOffset = 0x1209f3c0;
+inline constexpr std::array<std::uint8_t, 16> kLevelChunkDispatcherSignature{
+        0xff, 0x43, 0x01, 0xd1, 0xfd, 0x7b, 0x02, 0xa9,
+        0xf5, 0x1b, 0x00, 0xf9, 0xf4, 0x4f, 0x04, 0xa9};
+inline constexpr std::uintptr_t kLevelChunkVtableOffset = 0x12073298;
+
+inline constexpr std::uintptr_t kSubChunkDispatcherOffset = 0x0c2bb704;
+inline constexpr std::uintptr_t kSubChunkDispatcherVtableSlotOffset = 0x120a3080;
+inline constexpr std::array<std::uint8_t, 16> kSubChunkDispatcherSignature{
+        0x48, 0x00, 0x40, 0xf9, 0xe0, 0x03, 0x02, 0xaa,
+        0x62, 0x00, 0x40, 0xf9, 0x03, 0x71, 0x41, 0xf9};
+inline constexpr std::uintptr_t kSubChunkVtableOffset = 0x120e9150;
+
+// LoopbackPacketSender::send(Packet&) is the client outbound vtable path. It
+// safely delegates to sendToServer without requiring an inline trampoline.
+inline constexpr std::uintptr_t kLoopbackSendOffset = 0x0c2de4a4;
+inline constexpr std::uintptr_t kLoopbackSendVtableSlotOffset = 0x120a55a8;
+inline constexpr std::array<std::uint8_t, 16> kLoopbackSendSignature{
+        0xff, 0x43, 0x01, 0xd1, 0xfd, 0x7b, 0x03, 0xa9,
+        0xf3, 0x23, 0x00, 0xf9, 0xfd, 0xc3, 0x00, 0x91};
+inline constexpr std::uintptr_t kSubChunkRequestVtableOffset = 0x120e8e30;
+inline constexpr std::ptrdiff_t kSubChunkRequestVectorBeginOffset = 0x38;
+inline constexpr std::ptrdiff_t kSubChunkRequestVectorEndOffset = 0x40;
+inline constexpr std::uintptr_t kSubChunkPositionSize = 12;
+inline constexpr std::ptrdiff_t kSubChunkResponseVectorBeginOffset = 0x38;
+inline constexpr std::ptrdiff_t kSubChunkResponseVectorEndOffset = 0x40;
+inline constexpr std::uintptr_t kSubChunkPacketDataSize = 576;
 
 // BaseActorRenderContext::getProjectionMatrix(). This validates the context ->
 // ScreenContext -> Camera path used by the passive overlay capture.

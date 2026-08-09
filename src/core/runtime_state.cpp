@@ -3,13 +3,24 @@
 #include "core/config.hpp"
 #include "diagnostics/stream_probe.hpp"
 #include "platform/files.hpp"
+#include "platform/preferences_store.hpp"
 
 namespace dobby {
 
 RuntimeState::RuntimeState()
 : sessionStartedAt_(timestamp()),
   autoPopup_(config().autoPopup),
-  verbose_(config().verbose) {}
+  verbose_(config().verbose) {
+    const DeveloperPreferences preferences = loadDeveloperPreferences({
+            .autoPopup = config().autoPopup,
+            .entityHitboxes = true,
+            .networkMetricsOverlay = true,
+    });
+    autoPopup_.store(preferences.autoPopup, std::memory_order_relaxed);
+    entityHitboxes_.store(preferences.entityHitboxes, std::memory_order_relaxed);
+    networkMetricsOverlay_.store(
+            preferences.networkMetricsOverlay, std::memory_order_relaxed);
+}
 
 void RuntimeState::setHookStatus(std::string status, bool warningHook, bool streamProbe) {
     warningHookInstalled_.store(warningHook, std::memory_order_relaxed);
@@ -89,6 +100,23 @@ bool RuntimeState::entityHitboxesAvailable() const {
 
 void RuntimeState::setEntityHitboxesAvailable(bool available) {
     entityHitboxesAvailable_.store(available, std::memory_order_relaxed);
+}
+
+bool RuntimeState::networkMetricsOverlay() const {
+    return networkMetricsOverlay_.load(std::memory_order_relaxed);
+}
+
+bool RuntimeState::toggleNetworkMetricsOverlay() {
+    return !networkMetricsOverlay_.exchange(
+            !networkMetricsOverlay(), std::memory_order_relaxed);
+}
+
+DeveloperPreferences RuntimeState::developerPreferences() const {
+    return {
+            .autoPopup = autoPopup(),
+            .entityHitboxes = entityHitboxes(),
+            .networkMetricsOverlay = networkMetricsOverlay(),
+    };
 }
 
 RuntimeState& runtimeState() {

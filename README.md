@@ -3,11 +3,13 @@
 Compact Minecraft Bedrock developer client for macOS
 [mcpelauncher](https://github.com/minecraft-linux/mcpelauncher-manifest).
 
-It captures packet violations and raw decode evidence, and can display Bedrock's native entity and player hitboxes in game.
+It captures packet violations and raw decode evidence, displays Bedrock's native entity and player hitboxes, and shows native RakNet ping with an observed server-tick rate.
 
 ## In-game diagnostic
 
-`Mods > Dobby` contains toggles for automatic violation popups and colored entity hitboxes. Packet reports contain the client-observed reason, decode boundary, read trace, and raw bytes. Repeated disconnects always create a new popup.
+`Mods > Dobby` contains the network-metrics overlay. The compact top-right overlay shows native `PING`, client-observed `TPS~`, cumulative `LevelChunk` packets with their one-second rate, and outstanding subchunk requests while connected.
+
+Menu toggles are saved locally and restored on the next launch.
 
 ![Packet rejection diagnostic window](media/image.png)
 

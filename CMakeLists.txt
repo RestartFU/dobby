@@ -8,21 +8,28 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(DOBBY_COMMON_SOURCES
     src/core/config.cpp
+    src/core/preferences.cpp
     src/core/runtime_state.cpp
     src/diagnostics/client_schema_trace.cpp
     src/diagnostics/report_builder.cpp
     src/diagnostics/stream_probe.cpp
     src/diagnostics/violation_decoder.cpp
+    src/metrics/chunk_metrics_layout.cpp
+    src/metrics/network_metrics.cpp
     src/platform/files.cpp
+    src/platform/preferences_store.cpp
     src/ui/entity_hitbox_overlay.cpp
+    src/ui/network_metrics_overlay.cpp
     src/ui/window_policy.cpp)
 
 if(ANDROID)
     add_library(dobby SHARED
         src/dobby.cpp
         ${DOBBY_COMMON_SOURCES}
+        src/hooks/chunk_metrics_hook.cpp
         src/hooks/entity_hitbox_hook.cpp
         src/hooks/minecraft_image.cpp
+        src/hooks/network_metrics_hook.cpp
         src/hooks/packet_hooks.cpp
         src/platform/launcher.cpp
         src/platform/log.cpp

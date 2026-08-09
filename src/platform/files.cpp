@@ -34,6 +34,48 @@ bool writeFile(std::string_view path, std::string_view text, std::string_view mo
     return complete;
 }
 
+bool writeFileAtomically(std::string_view path, std::string_view text) {
+    const std::string target(path);
+    const std::string temporary = target + ".tmp";
+    if (!writeFile(temporary, text, "wb"))
+        return false;
+
+    std::error_code error;
+    std::filesystem::rename(temporary, target, error);
+    if (!error)
+        return true;
+    std::filesystem::remove(temporary, error);
+    return false;
+}
+
+std::optional<std::string> readFile(std::string_view path, std::size_t maximumBytes) {
+    const std::string ownedPath(path);
+    FILE* file = std::fopen(ownedPath.c_str(), "rb");
+    if (file == nullptr)
+        return std::nullopt;
+
+    std::string result;
+    result.reserve(maximumBytes);
+    std::array<char, 512> buffer{};
+    while (!std::feof(file)) {
+        const std::size_t read = std::fread(buffer.data(), 1, buffer.size(), file);
+        if (read == 0) {
+            if (std::ferror(file)) {
+                std::fclose(file);
+                return std::nullopt;
+            }
+            break;
+        }
+        if (result.size() > maximumBytes || read > maximumBytes - result.size()) {
+            std::fclose(file);
+            return std::nullopt;
+        }
+        result.append(buffer.data(), read);
+    }
+    std::fclose(file);
+    return result;
+}
+
 std::string timestamp() {
     timespec now{};
     clock_gettime(CLOCK_REALTIME, &now);
@@ -102,6 +144,11 @@ const std::string& latestPath() {
 
 const std::string& clipboardPath() {
     static const std::string value = outputPath("dobby-clipboard.txt");
+    return value;
+}
+
+const std::string& preferencesPath() {
+    static const std::string value = outputPath("dobby-preferences.conf");
     return value;
 }
 

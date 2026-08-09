@@ -1,12 +1,17 @@
 #include "core/config.hpp"
 #include "core/constants.hpp"
+#include "core/preferences.hpp"
 #include "core/runtime_state.hpp"
 #include "diagnostics/client_schema_trace.hpp"
 #include "diagnostics/report_builder.hpp"
 #include "diagnostics/stream_probe.hpp"
 #include "diagnostics/violation_decoder.hpp"
+#include "metrics/chunk_metrics_layout.hpp"
 #include "network/packet_names.hpp"
+#include "metrics/network_metrics.hpp"
+#include "platform/preferences_store.hpp"
 #include "ui/entity_hitbox_overlay.hpp"
+#include "ui/network_metrics_overlay.hpp"
 #include "ui/window_policy.hpp"
 
 #include <array>
@@ -15,10 +20,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <iostream>
+#include <filesystem>
 #include <string>
 
 namespace {
+
+void require(bool condition) {
+    if (!condition)
+        std::abort();
+}
 
 template <class T>
 void store(std::byte* destination, T value) {
@@ -168,6 +180,10 @@ void testEntityHitboxState() {
     assert(state.entityHitboxesAvailable());
     assert(state.entityHitboxes());
     state.setEntityHitboxes(false);
+    const bool metricsInitiallyVisible = state.networkMetricsOverlay();
+    assert(state.toggleNetworkMetricsOverlay() != metricsInitiallyVisible);
+    assert(state.toggleNetworkMetricsOverlay() == metricsInitiallyVisible);
+    static_cast<void>(metricsInitiallyVisible);
 }
 
 void testEntityProjection() {
@@ -188,6 +204,10 @@ void testEntityProjection() {
     static_assert(dobby::target::kLevelGetPrimaryLocalPlayerOffset == 0x0f225818);
     static_assert(dobby::target::kLevelGetPrimaryLocalPlayerVtableSlot == 77);
     static_assert(dobby::target::kClientLevelVtableOffset == 0x11ed28b0);
+    require(dobby::entityHitboxObservedForPresentation(1, 0));
+    require(dobby::entityHitboxObservedForPresentation(25, 24));
+    require(!dobby::entityHitboxObservedForPresentation(2, 0));
+    require(!dobby::entityHitboxObservedForPresentation(24, 25));
     const dobby::CameraFrame camera{
             {0.0F, 0.0F, 0.0F},
             {{1.0F, 0.0F, 0.0F, 0.0F,
@@ -230,6 +250,81 @@ void testEntityProjection() {
     static_cast<void>(projection);
 }
 
+void testNetworkMetrics() {
+    dobby::NetworkMetricsTracker metrics;
+    metrics.recordPing(48, 42, 1000);
+    auto snapshot = metrics.snapshot(1000);
+    assert(snapshot.connected);
+    assert(snapshot.pingMilliseconds == 42);
+    assert(!snapshot.observedTicksPerSecond);
+
+    for (std::uint64_t elapsed = 0; elapsed <= 1500; elapsed += 100)
+        metrics.recordServerTick(100 + elapsed / 50, 1000 + elapsed);
+    metrics.recordChunk(1800);
+    metrics.recordChunk(2400);
+    dobby::setOutstandingChunkMetricsAvailable(true);
+    metrics.recordSubChunkRequest(12);
+    metrics.recordSubChunkResponse(5);
+    snapshot = metrics.snapshot(2500);
+    assert(snapshot.observedTicksPerSecond);
+    assert(*snapshot.observedTicksPerSecond == 20.0);
+    assert(snapshot.chunksReceived == 2);
+    assert(snapshot.chunksPerSecond == 2);
+    assert(snapshot.outstandingSubChunkRequests == 7);
+
+    const auto text = dobby::formatNetworkMetrics(snapshot);
+    assert(text.visible);
+    assert(text.ping == "PING 42 MS");
+    assert(text.observedTps == "TPS~ 20.0");
+    assert(text.chunks == "CHUNKS 2 (2/S)");
+    assert(text.pending == "PENDING 7");
+    const auto geometry = dobby::buildNetworkMetricsGeometry(
+            snapshot, 1280.0F, 720.0F);
+    assert(!geometry.shadowVertices.empty());
+    assert(!geometry.pingVertices.empty());
+    assert(!geometry.tpsVertices.empty());
+    assert(!geometry.chunkVertices.empty());
+    assert(!geometry.pendingVertices.empty());
+
+    assert(!metrics.snapshot(5001).connected);
+    metrics.recordServerTick(1, 5100);
+    assert(metrics.retainedTickSamples() == 1);
+    for (std::uint64_t index = 1; index < 100; ++index)
+        metrics.recordServerTick(index + 1, 5100 + index * 50);
+    assert(metrics.retainedTickSamples() <= 64);
+
+    metrics.reset();
+    metrics.recordPing(-1, -1, 9000);
+    assert(!metrics.snapshot(9000).connected);
+    const auto hidden = dobby::formatNetworkMetrics(metrics.snapshot(9000));
+    assert(!hidden.visible);
+
+    static_assert(dobby::target::kLevelGetCurrentServerTickOffset == 0x09ad9014);
+    static_assert(dobby::target::kLevelGetCurrentServerTickVtableSlot == 81);
+    static_assert(dobby::target::kRakNetPeerUpdateOffset == 0x0c2bda48);
+    static_assert(dobby::target::kRakNetPeerLastPingOffset == 0x104);
+    static_assert(dobby::target::kRakNetPeerAveragePingOffset == 0x108);
+    static_assert(dobby::target::kLevelChunkDispatcherOffset == 0x0c2b88e4);
+    static_assert(dobby::target::kLevelChunkDispatcherVtableSlotOffset == 0x1209f3c0);
+    static_assert(dobby::target::kSubChunkDispatcherOffset == 0x0c2bb704);
+    static_assert(dobby::target::kSubChunkDispatcherVtableSlotOffset == 0x120a3080);
+    static_assert(dobby::target::kLoopbackSendOffset == 0x0c2de4a4);
+    static_assert(dobby::target::kLoopbackSendVtableSlotOffset == 0x120a55a8);
+    static_assert(dobby::target::kSubChunkRequestVectorBeginOffset == 0x38);
+    static_assert(dobby::target::kSubChunkRequestVectorEndOffset == 0x40);
+    static_assert(dobby::target::kSubChunkPositionSize == 12);
+    static_assert(dobby::target::kSubChunkPacketDataSize == 576);
+
+    assert(dobby::boundedVectorElementCount(0, 0, 12, 4096) == 0);
+    assert(dobby::boundedVectorElementCount(0x1000, 0x1030, 12, 4096) == 4);
+    assert(!dobby::boundedVectorElementCount(0x1000, 0x102f, 12, 4096));
+    assert(!dobby::boundedVectorElementCount(0x1030, 0x1000, 12, 4096));
+    assert(!dobby::boundedVectorElementCount(0, 0x1000, 12, 4096));
+    assert(!dobby::boundedVectorElementCount(0x1000, 0x100c, 0, 4096));
+    assert(!dobby::boundedVectorElementCount(0x1000, 0xd00c, 12, 4096));
+    dobby::setOutstandingChunkMetricsAvailable(false);
+}
+
 void testConfigurationAndPacketCatalog() {
     assert(dobby::parseBoolean("true", false));
     assert(!dobby::parseBoolean("off", true));
@@ -242,6 +337,51 @@ void testConfigurationAndPacketCatalog() {
     static_assert(dobby::packetName(156) == "PacketViolationWarning");
     static_assert(dobby::packetName(344) == "SyncWorldClocks");
     static_assert(dobby::packetName(9999) == "UnknownPacket");
+}
+
+void testDeveloperPreferences() {
+    const dobby::DeveloperPreferences defaults{
+            .autoPopup = true,
+            .entityHitboxes = true,
+            .networkMetricsOverlay = true,
+    };
+
+    const auto parsed = dobby::parseDeveloperPreferences(
+            "version=1\n"
+            "automatic_popup=off\n"
+            "entity_hitboxes=false\n"
+            "network_metrics=0\n",
+            defaults);
+    require(!parsed.autoPopup);
+    require(!parsed.entityHitboxes);
+    require(!parsed.networkMetricsOverlay);
+
+    const auto malformed = dobby::parseDeveloperPreferences(
+            "version=1\n"
+            "automatic_popup=invalid\n"
+            "entity_hitboxes=maybe\n"
+            "network_metrics=unknown\n"
+            "future_setting=false\n",
+            defaults);
+    require(malformed.autoPopup);
+    require(malformed.entityHitboxes);
+    require(malformed.networkMetricsOverlay);
+
+    const auto unsupported = dobby::parseDeveloperPreferences(
+            "version=2\nentity_hitboxes=false\n", defaults);
+    require(unsupported == defaults);
+
+    const auto serialized = dobby::serializeDeveloperPreferences(parsed);
+    const auto roundTrip = dobby::parseDeveloperPreferences(serialized, defaults);
+    require(roundTrip == parsed);
+
+    const auto path = std::filesystem::temp_directory_path() /
+            "dobby-preferences-test.conf";
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    require(dobby::saveDeveloperPreferencesFile(path.string(), parsed));
+    require(dobby::loadDeveloperPreferencesFile(path.string(), defaults) == parsed);
+    std::filesystem::remove(path, error);
 }
 
 void testDobbyWindowPolicy() {
@@ -265,7 +405,9 @@ int main() {
     testRepeatViolationsAreRetained();
     testEntityHitboxState();
     testEntityProjection();
+    testNetworkMetrics();
     testConfigurationAndPacketCatalog();
+    testDeveloperPreferences();
     testDobbyWindowPolicy();
     std::cout << "Dobby tests passed\n";
 }

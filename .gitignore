@@ -27,6 +27,7 @@ CMakeFiles/
 /dobby-events.jsonl
 /latest-dobby-violation.txt
 /dobby-clipboard.txt
+/dobby-preferences.conf
 /media/
 !/media/
 /media/*

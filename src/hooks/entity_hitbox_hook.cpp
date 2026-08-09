@@ -5,6 +5,7 @@
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"
 #include "hooks/minecraft_image.hpp"
+#include "hooks/network_metrics_hook.hpp"
 #include "platform/launcher.hpp"
 #include "platform/log.hpp"
 #include "ui/entity_hitbox_overlay.hpp"
@@ -53,6 +54,7 @@ std::uintptr_t expectedClientLevelVtable{};
 MinecraftImage minecraftImage{};
 std::atomic_uint64_t lastRegistryCaptureFrame{std::numeric_limits<std::uint64_t>::max()};
 std::atomic_uint64_t lastPlayerCaptureFrame{std::numeric_limits<std::uint64_t>::max()};
+std::atomic_uint64_t lastMetricsCaptureFrame{std::numeric_limits<std::uint64_t>::max()};
 
 template <class Value>
 Value readObjectField(const void* object, std::ptrdiff_t offset) {
@@ -238,10 +240,19 @@ bool captureRuntimePlayers(const void* level, const CameraFrame& frame) {
 
 extern "C" void dobby_capture_entity_hitbox(
         const void* renderContext, const void* actor) {
-    if (!runtimeState().entityHitboxes() || renderContext == nullptr || actor == nullptr ||
-        actorGetAabb == nullptr || contextGetCameraPosition == nullptr) {
+    if (renderContext == nullptr || actor == nullptr)
         return;
+
+    const void* level = readObjectField<const void*>(
+            actor, target::kActorLevelOffset);
+    const std::uint64_t presentation = entityHitboxPresentationFrame();
+    if (lastMetricsCaptureFrame.exchange(
+                presentation, std::memory_order_acq_rel) != presentation) {
+        captureClientServerTick(level);
     }
+    if (!runtimeState().entityHitboxes() || actorGetAabb == nullptr ||
+        contextGetCameraPosition == nullptr)
+        return;
 
     const auto* bounds = actorGetAabb(actor);
     const void* screenContext = readObjectField<const void*>(
@@ -265,7 +276,6 @@ extern "C" void dobby_capture_entity_hitbox(
             frame.projection);
     if (!viewRead || !projectionRead)
         return;
-    const void* level = readObjectField<const void*>(actor, target::kActorLevelOffset);
     const bool localPlayer = validClientLevel(level) &&
             actor == levelGetPrimaryLocalPlayer(level);
     const auto result = localPlayer

@@ -130,13 +130,20 @@ std::uint64_t entityHitboxPresentationFrame() {
     return presentationFrame.load(std::memory_order_acquire);
 }
 
+bool entityHitboxObservedForPresentation(
+        std::uint64_t currentFrame, std::uint64_t lastSeenFrame) {
+    return currentFrame >= lastSeenFrame && currentFrame - lastSeenFrame <= 1;
+}
+
 } // namespace dobby
 
 #if defined(__ANDROID__)
 
 #include "core/runtime_state.hpp"
+#include "metrics/network_metrics.hpp"
 #include "platform/launcher.hpp"
 #include "platform/log.hpp"
+#include "ui/network_metrics_overlay.hpp"
 
 #include <GLES2/gl2.h>
 
@@ -147,8 +154,6 @@ std::uint64_t entityHitboxPresentationFrame() {
 
 namespace dobby {
 namespace {
-
-constexpr std::uint64_t kRetainedPresentationFrames = 180;
 
 struct GlApi {
     PFNGLCREATESHADERPROC createShader{};
@@ -361,14 +366,17 @@ void drawLines(const float* vertices, std::size_t floatCount,
 }
 
 void drawEntityHitboxes(void*, void* display, void* surface) {
+    const bool showHitboxes = runtimeState().entityHitboxes();
+    const NetworkMetricsSnapshot metrics = runtimeState().networkMetricsOverlay()
+            ? currentNetworkMetrics() : NetworkMetricsSnapshot{};
     std::vector<CapturedBox> boxes;
     {
         std::lock_guard lock(captureMutex);
         const std::uint64_t currentFrame =
                 presentationFrame.fetch_add(1, std::memory_order_acq_rel) + 1;
         for (auto entry = capturedBoxes.begin(); entry != capturedBoxes.end();) {
-            if (currentFrame - entry->second.lastSeenFrame >
-                kRetainedPresentationFrames) {
+            if (!entityHitboxObservedForPresentation(
+                        currentFrame, entry->second.lastSeenFrame)) {
                 entry = capturedBoxes.erase(entry);
             } else {
                 boxes.push_back(entry->second);
@@ -376,8 +384,9 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
             }
         }
     }
-    if (!overlayInstalled.load(std::memory_order_acquire) ||
-        !runtimeState().entityHitboxes()) {
+    if (!showHitboxes)
+        boxes.clear();
+    if (!overlayInstalled.load(std::memory_order_acquire)) {
         return;
     }
     if (program == 0 && !createRenderer()) {
@@ -397,6 +406,10 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
     const float height = static_cast<float>(
             hasSurfaceSize ? surfaceHeight : viewport[3]);
     if (width <= 0.0F || height <= 0.0F)
+        return;
+    const NetworkMetricsGeometry metricsGeometry =
+            buildNetworkMetricsGeometry(metrics, width, height);
+    if (boxes.empty() && metricsGeometry.shadowVertices.empty())
         return;
 
     if (boxes.size() > largestBatchLogged && batchSamplesLogged < 8) {
@@ -579,6 +592,28 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
         drawLines(locatorVertices.data(), locatorVertices.size(), 0.0F, 0.0F, 0.0F, 0.9F, 7.0F);
         drawLines(locatorVertices.data(), locatorVertices.size(), 1.0F, 0.2F, 0.65F, 1.0F, 3.0F);
     }
+    if (!metricsGeometry.shadowVertices.empty()) {
+        drawLines(metricsGeometry.shadowVertices.data(),
+                  metricsGeometry.shadowVertices.size(),
+                  0.0F, 0.0F, 0.0F, 0.9F,
+                  metricsGeometry.lineWidth + 2.0F);
+        drawLines(metricsGeometry.pingVertices.data(),
+                  metricsGeometry.pingVertices.size(),
+                  1.0F, 1.0F, 1.0F, 1.0F,
+                  metricsGeometry.lineWidth);
+        drawLines(metricsGeometry.tpsVertices.data(),
+                  metricsGeometry.tpsVertices.size(),
+                  0.35F, 1.0F, 0.45F, 1.0F,
+                  metricsGeometry.lineWidth);
+        drawLines(metricsGeometry.chunkVertices.data(),
+                  metricsGeometry.chunkVertices.size(),
+                  0.45F, 0.85F, 1.0F, 1.0F,
+                  metricsGeometry.lineWidth);
+        drawLines(metricsGeometry.pendingVertices.data(),
+                  metricsGeometry.pendingVertices.size(),
+                  1.0F, 0.8F, 0.3F, 1.0F,
+                  metricsGeometry.lineWidth);
+    }
     const GLenum drawError = gl.getError();
 
     if (!presentationSampleLogged.exchange(true, std::memory_order_acq_rel)) {
@@ -617,15 +652,15 @@ bool installEntityHitboxOverlay() {
     if (overlayInstalled.load(std::memory_order_acquire))
         return true;
     if (!resolveGlApi()) {
-        logLine("ERROR: entity overlay unavailable; launcher GLES2 API missing");
+        logLine("ERROR: developer overlay unavailable; launcher GLES2 API missing");
         return false;
     }
     if (!addLauncherSwapBuffersCallback(nullptr, drawEntityHitboxes)) {
-        logLine("ERROR: entity overlay unavailable; launcher render callback missing");
+        logLine("ERROR: developer overlay unavailable; launcher render callback missing");
         return false;
     }
     overlayInstalled.store(true, std::memory_order_release);
-    logLine("entity overlay: through-wall GLES2 renderer ready");
+    logLine("developer overlay: through-wall GLES2 renderer ready");
     return true;
 }
 

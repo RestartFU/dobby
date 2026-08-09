@@ -12,6 +12,7 @@
 #include "platform/files.hpp"
 #include "platform/launcher.hpp"
 #include "platform/log.hpp"
+#include "platform/preferences_store.hpp"
 
 #include <array>
 #include <string>
@@ -25,6 +26,7 @@ constexpr char kStatusWindowTitle[] = "Dobby##dobby_status_v2";
 bool menuUnselected(void*) { return false; }
 bool autoPopupSelected(void*) { return runtimeState().autoPopup(); }
 bool entityHitboxesSelected(void*) { return runtimeState().entityHitboxes(); }
+bool networkMetricsSelected(void*) { return runtimeState().networkMetricsOverlay(); }
 
 void windowClosed(void*) { verboseLine("developer window closed"); }
 
@@ -67,14 +69,28 @@ void clearHistory(void*) {
     logLine("UI: cleared Dobby session history");
 }
 
+void persistDeveloperPreferences() {
+    if (!saveDeveloperPreferences(runtimeState().developerPreferences()))
+        logLine("ERROR: could not save Dobby preferences");
+}
+
 void toggleAutoPopup(void*) {
     const bool enabled = runtimeState().toggleAutoPopup();
+    persistDeveloperPreferences();
     logLine(enabled ? "UI: automatic violation popups enabled"
                     : "UI: automatic violation popups disabled");
 }
 
 void toggleHitboxes(void*) {
     static_cast<void>(toggleEntityHitboxes());
+    persistDeveloperPreferences();
+}
+
+void toggleNetworkMetrics(void*) {
+    const bool enabled = runtimeState().toggleNetworkMetricsOverlay();
+    persistDeveloperPreferences();
+    logLine(enabled ? "UI: network metrics overlay enabled"
+                    : "UI: network metrics overlay disabled");
 }
 
 } // namespace
@@ -148,10 +164,13 @@ void showLatestViolation(void*) {
 void registerDeveloperUi() {
     resolveLauncherApi();
     installDobbyWindowPolicy();
-    const bool overlayReady = entityHitboxHookInstalled() && installEntityHitboxOverlay();
-    runtimeState().setEntityHitboxesAvailable(overlayReady);
-    if (overlayReady)
-        logLine("entity hitboxes enabled by default");
+    const bool overlayReady = installEntityHitboxOverlay();
+    const bool hitboxesReady = entityHitboxHookInstalled() && overlayReady;
+    runtimeState().setEntityHitboxesAvailable(hitboxesReady);
+    if (hitboxesReady)
+        logLine(runtimeState().entityHitboxes()
+                        ? "entity hitboxes enabled"
+                        : "entity hitboxes disabled by saved preference");
     logLine(launcherWindowAvailable() ? "UI: launcher window API ready"
                                       : "ERROR: launcher window API unavailable");
     logLine(launcherClipboardAvailable() ? "UI: native clipboard ready"
@@ -161,9 +180,12 @@ void registerDeveloperUi() {
         return;
     }
 
-    static std::array<LauncherMenuEntry, 2> subentries{
+    static std::array<LauncherMenuEntry, 3> subentries{
             LauncherMenuEntry{
                     "Entity hitboxes", nullptr, entityHitboxesSelected, toggleHitboxes, 0, nullptr},
+            LauncherMenuEntry{
+                    "Network metrics", nullptr, networkMetricsSelected,
+                    toggleNetworkMetrics, 0, nullptr},
             LauncherMenuEntry{"Automatic popup", nullptr, autoPopupSelected, toggleAutoPopup, 0, nullptr},
     };
     static LauncherMenuEntry root{

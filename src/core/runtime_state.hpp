@@ -1,6 +1,7 @@
 #pragma once
 
 #include "diagnostics/types.hpp"
+#include "core/preferences.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -40,6 +41,9 @@ public:
     void setEntityHitboxes(bool enabled);
     bool entityHitboxesAvailable() const;
     void setEntityHitboxesAvailable(bool available);
+    bool networkMetricsOverlay() const;
+    bool toggleNetworkMetricsOverlay();
+    DeveloperPreferences developerPreferences() const;
 
 private:
     mutable std::mutex mutex_;
@@ -52,6 +56,7 @@ private:
     std::atomic_bool verbose_{false};
     std::atomic_bool entityHitboxes_{true};
     std::atomic_bool entityHitboxesAvailable_{false};
+    std::atomic_bool networkMetricsOverlay_{true};
     std::atomic_size_t totalViolations_{0};
 };
 

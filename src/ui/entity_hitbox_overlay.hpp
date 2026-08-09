@@ -40,6 +40,8 @@ bool projectWorldPoint(
 HitboxSubmissionResult submitEntityHitbox(
         const void* entityIdentity, const void* levelIdentity,
         const EntityAabb& bounds, const CameraFrame& camera);
+bool entityHitboxObservedForPresentation(
+        std::uint64_t presentationFrame, std::uint64_t lastSeenFrame);
 std::uint64_t entityHitboxPresentationFrame();
 bool installEntityHitboxOverlay();
 
