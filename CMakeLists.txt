@@ -13,7 +13,8 @@ set(DOBBY_COMMON_SOURCES
     src/diagnostics/report_builder.cpp
     src/diagnostics/stream_probe.cpp
     src/diagnostics/violation_decoder.cpp
-    src/platform/files.cpp)
+    src/platform/files.cpp
+    src/ui/window_policy.cpp)
 
 if(ANDROID)
     add_library(dobby SHARED

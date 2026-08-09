@@ -15,10 +15,12 @@ using AddMenuFn = void (*)(std::size_t length, LauncherMenuEntry* entries);
 using ShowWindowFn = void (*)(
         const char* title, int isModal, void* user, void (*onClose)(void* user),
         int count, LauncherControl* controls);
+using AddSwapBuffersCallbackFn = void (*)(void* user, LauncherSwapBuffersCallback callback);
 
 HostSetClipboardTextFn hostSetClipboardText = nullptr;
 AddMenuFn launcherAddMenu = nullptr;
 ShowWindowFn launcherShowWindow = nullptr;
+AddSwapBuffersCallbackFn launcherAddSwapBuffersCallback = nullptr;
 
 } // namespace
 
@@ -39,6 +41,16 @@ void resolveLauncherApi() {
                     dlsym(menuLibrary, "mcpelauncher_show_window"));
     }
 
+    if (launcherAddSwapBuffersCallback == nullptr) {
+        void* gameWindowLibrary = dlopen("libmcpelauncher_gamewindow.so", RTLD_NOW | RTLD_NOLOAD);
+        if (gameWindowLibrary == nullptr)
+            gameWindowLibrary = dlopen("libmcpelauncher_gamewindow.so", RTLD_NOW);
+        if (gameWindowLibrary != nullptr) {
+            launcherAddSwapBuffersCallback = reinterpret_cast<AddSwapBuffersCallbackFn>(
+                    dlsym(gameWindowLibrary, "game_window_add_swap_buffers_callback"));
+        }
+    }
+
     if (hostSetClipboardText == nullptr && mcpelauncher_host_dlopen != nullptr &&
         mcpelauncher_host_dlsym != nullptr) {
         void* host = mcpelauncher_host_dlopen(nullptr, RTLD_NOW);
@@ -52,6 +64,23 @@ void resolveLauncherApi() {
 bool launcherWindowAvailable() { return launcherShowWindow != nullptr; }
 bool launcherMenuAvailable() { return launcherAddMenu != nullptr; }
 bool launcherClipboardAvailable() { return hostSetClipboardText != nullptr; }
+
+void* resolveHostSymbol(const char* name) {
+    if (name == nullptr || mcpelauncher_host_dlopen == nullptr ||
+        mcpelauncher_host_dlsym == nullptr) {
+        return nullptr;
+    }
+    void* host = mcpelauncher_host_dlopen(nullptr, RTLD_NOW);
+    return host == nullptr ? nullptr : mcpelauncher_host_dlsym(host, name);
+}
+
+bool addLauncherSwapBuffersCallback(void* user, LauncherSwapBuffersCallback callback) {
+    resolveLauncherApi();
+    if (launcherAddSwapBuffersCallback == nullptr || callback == nullptr)
+        return false;
+    launcherAddSwapBuffersCallback(user, callback);
+    return true;
+}
 
 void addLauncherMenu(std::span<LauncherMenuEntry> entries) {
     resolveLauncherApi();

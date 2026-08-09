@@ -51,10 +51,14 @@ struct LauncherControl {
 
 namespace dobby {
 
+using LauncherSwapBuffersCallback = void (*)(void* user, void* display, void* surface);
+
 void resolveLauncherApi();
 bool launcherWindowAvailable();
 bool launcherMenuAvailable();
 bool launcherClipboardAvailable();
+void* resolveHostSymbol(const char* name);
+bool addLauncherSwapBuffersCallback(void* user, LauncherSwapBuffersCallback callback);
 void addLauncherMenu(std::span<LauncherMenuEntry> entries);
 void showLauncherWindow(
         const char* title, std::span<LauncherControl> controls,

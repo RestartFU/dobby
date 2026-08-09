@@ -1,4 +1,5 @@
 #include "ui/developer_ui.hpp"
+#include "ui/window_policy.hpp"
 
 #if defined(__ANDROID__)
 
@@ -21,7 +22,6 @@ constexpr char kStatusWindowTitle[] = "Dobby##dobby_status_v2";
 
 bool menuUnselected(void*) { return false; }
 bool autoPopupSelected(void*) { return runtimeState().autoPopup(); }
-bool verboseSelected(void*) { return runtimeState().verbose(); }
 
 void windowClosed(void*) { verboseLine("developer window closed"); }
 
@@ -38,15 +38,6 @@ void copyLatestReport(void*) {
         return;
     }
     logCopyResult(copyToClipboard(diagnostic->report), "full diagnostic");
-}
-
-void copyLatestJson(void*) {
-    const auto diagnostic = runtimeState().latestDiagnostic();
-    if (!diagnostic) {
-        logLine("UI: no packet JSON is available to copy");
-        return;
-    }
-    logCopyResult(copyToClipboard(diagnostic->json), "raw JSON");
 }
 
 void copyLatestRawPacket(void*) {
@@ -79,12 +70,6 @@ void toggleAutoPopup(void*) {
                     : "UI: automatic violation popups disabled");
 }
 
-void toggleVerbose(void*) {
-    const bool enabled = runtimeState().toggleVerbose();
-    logLine(enabled ? "UI: verbose developer events enabled"
-                    : "UI: verbose developer events disabled");
-}
-
 } // namespace
 
 void showDeveloperStatus(void*) {
@@ -115,6 +100,7 @@ void showDeveloperStatus(void*) {
             buttonControl("Clear session history", clearHistory),
     };
     showLauncherWindow(kStatusWindowTitle, controls, windowClosed);
+    applyDobbyWindowPolicy(kStatusWindowTitle);
 }
 
 void showLatestViolation(void*) {
@@ -148,11 +134,13 @@ void showLatestViolation(void*) {
 
     // Non-modal avoids the launcher's persistent full-screen dim layer on close.
     showLauncherWindow(kViolationWindowTitle, controls, windowClosed);
+    applyDobbyWindowPolicy(kViolationWindowTitle);
     logLine("UI: displayed packet violation window");
 }
 
 void registerDeveloperUi() {
     resolveLauncherApi();
+    installDobbyWindowPolicy();
     logLine(launcherWindowAvailable() ? "UI: launcher window API ready"
                                       : "ERROR: launcher window API unavailable");
     logLine(launcherClipboardAvailable() ? "UI: native clipboard ready"
@@ -162,15 +150,8 @@ void registerDeveloperUi() {
         return;
     }
 
-    static std::array<LauncherMenuEntry, 8> subentries{
-            LauncherMenuEntry{"Developer status", nullptr, menuUnselected, showDeveloperStatus, 0, nullptr},
-            LauncherMenuEntry{"Show last violation", nullptr, menuUnselected, showLatestViolation, 0, nullptr},
-            LauncherMenuEntry{"Copy diagnostic", nullptr, menuUnselected, copyLatestReport, 0, nullptr},
-            LauncherMenuEntry{"Copy raw packet bytes", nullptr, menuUnselected, copyLatestRawPacket, 0, nullptr},
-            LauncherMenuEntry{"Copy raw JSON", nullptr, menuUnselected, copyLatestJson, 0, nullptr},
-            LauncherMenuEntry{"Clear session history", nullptr, menuUnselected, clearHistory, 0, nullptr},
+    static std::array<LauncherMenuEntry, 1> subentries{
             LauncherMenuEntry{"Automatic popup", nullptr, autoPopupSelected, toggleAutoPopup, 0, nullptr},
-            LauncherMenuEntry{"Verbose developer log", nullptr, verboseSelected, toggleVerbose, 0, nullptr},
     };
     static LauncherMenuEntry root{
             "Dobby", nullptr, menuUnselected, showDeveloperStatus,

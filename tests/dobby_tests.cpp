@@ -5,6 +5,7 @@
 #include "diagnostics/stream_probe.hpp"
 #include "diagnostics/violation_decoder.hpp"
 #include "network/packet_names.hpp"
+#include "ui/window_policy.hpp"
 
 #include <array>
 #include <cassert>
@@ -168,6 +169,18 @@ void testConfigurationAndPacketCatalog() {
     static_assert(dobby::packetName(9999) == "UnknownPacket");
 }
 
+void testDobbyWindowPolicy() {
+    constexpr std::uint32_t existing = 1U << 3U;
+    assert(dobby::dobbyWindowFlags("Other", existing) == existing);
+    const auto flags = dobby::dobbyWindowFlags("Dobby##dobby_violation_v3", existing);
+    static_cast<void>(flags);
+    assert((flags & (1U << 1U)) != 0);
+    assert((flags & (1U << 5U)) != 0);
+    assert((flags & (1U << 6U)) != 0);
+    assert((flags & (1U << 8U)) != 0);
+    assert((flags & existing) != 0);
+}
+
 } // namespace
 
 int main() {
@@ -176,5 +189,6 @@ int main() {
     testClientSchemaFieldTrace();
     testRepeatViolationsAreRetained();
     testConfigurationAndPacketCatalog();
+    testDobbyWindowPolicy();
     std::cout << "Dobby tests passed\n";
 }
