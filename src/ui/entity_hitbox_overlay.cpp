@@ -256,6 +256,7 @@ bool entityHitboxObservedForPresentation(
 #if defined(__ANDROID__)
 
 #include "core/runtime_state.hpp"
+#include "hooks/network_metrics_hook.hpp"
 #include "metrics/network_metrics.hpp"
 #include "platform/launcher.hpp"
 #include "platform/log.hpp"
@@ -500,6 +501,8 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
     const bool showHitboxes = runtimeState().entityHitboxes();
     const bool showChests = runtimeState().chestEsp();
     const bool showOres = runtimeState().oreEsp();
+    if (metricsEnabled)
+        captureObservedClientServerTick();
     const NetworkMetricsSnapshot metrics = metricsEnabled
             ? currentNetworkMetrics() : NetworkMetricsSnapshot{};
     thread_local std::vector<CapturedBox> boxes;

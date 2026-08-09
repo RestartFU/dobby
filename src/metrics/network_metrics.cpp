@@ -36,7 +36,6 @@ bool fresh(std::uint64_t capturedAt, std::uint64_t now, std::uint64_t limit) {
 std::mutex globalMetricsMutex;
 NetworkMetricsTracker globalMetrics;
 const void* sampledLevelIdentity = nullptr;
-const void* sampledPeerIdentity = nullptr;
 std::atomic_bool outstandingChunkMetricsAvailable{false};
 
 } // namespace
@@ -189,8 +188,11 @@ void NetworkMetricsTracker::reset() {
     outstandingSubChunkRequests_ = 0;
 }
 
-void NetworkMetricsTracker::resetServerTicks() {
+void NetworkMetricsTracker::resetWorld() {
     tickSamples_.clear();
+    loadedChunks_.clear();
+    recentChunkMilliseconds_.clear();
+    outstandingSubChunkRequests_ = 0;
 }
 
 std::size_t NetworkMetricsTracker::retainedTickSamples() const {
@@ -213,15 +215,6 @@ void recordNativePing(const void* peerIdentity, int lastPingMilliseconds,
     if (peerIdentity == nullptr)
         return;
     std::lock_guard lock(globalMetricsMutex);
-    // Chunk packets can be decoded just before the first RakNet update calls
-    // this function. Preserve those observations when establishing the first
-    // peer identity; only a transition from an already-observed peer starts a
-    // new metrics session.
-    if (sampledPeerIdentity != nullptr && sampledPeerIdentity != peerIdentity) {
-        globalMetrics.reset();
-        sampledLevelIdentity = nullptr;
-    }
-    sampledPeerIdentity = peerIdentity;
     globalMetrics.recordPing(
             lastPingMilliseconds, averagePingMilliseconds,
             monotonicMilliseconds());
@@ -232,7 +225,8 @@ void recordObservedServerTick(const void* levelIdentity, std::uint64_t tick) {
         return;
     std::lock_guard lock(globalMetricsMutex);
     if (sampledLevelIdentity != levelIdentity) {
-        globalMetrics.resetServerTicks();
+        if (sampledLevelIdentity != nullptr)
+            globalMetrics.resetWorld();
         sampledLevelIdentity = levelIdentity;
     }
     globalMetrics.recordServerTick(tick, monotonicMilliseconds());
@@ -249,6 +243,11 @@ void recordClientChunkLoaded(
     if (levelIdentity == nullptr)
         return;
     std::lock_guard lock(globalMetricsMutex);
+    if (sampledLevelIdentity != levelIdentity) {
+        if (sampledLevelIdentity != nullptr)
+            globalMetrics.resetWorld();
+        sampledLevelIdentity = levelIdentity;
+    }
     globalMetrics.recordChunkLoaded(
             reinterpret_cast<std::uintptr_t>(levelIdentity), chunkX, chunkZ);
 }
@@ -259,6 +258,8 @@ void recordClientChunkUnloaded(
     if (levelIdentity == nullptr)
         return;
     std::lock_guard lock(globalMetricsMutex);
+    if (sampledLevelIdentity != levelIdentity)
+        return;
     globalMetrics.recordChunkUnloaded(
             reinterpret_cast<std::uintptr_t>(levelIdentity), chunkX, chunkZ);
 }
@@ -286,7 +287,6 @@ void resetNetworkMetrics() {
     std::lock_guard lock(globalMetricsMutex);
     globalMetrics.reset();
     sampledLevelIdentity = nullptr;
-    sampledPeerIdentity = nullptr;
 }
 
 } // namespace dobby

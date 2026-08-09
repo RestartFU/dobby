@@ -5,6 +5,8 @@ namespace dobby {
 void installNetworkMetricsHook();
 bool networkPingHookInstalled();
 bool serverTickSourceInstalled();
-void captureClientServerTick(const void* level);
+void observeClientLevelForMetrics(const void* level);
+void captureObservedClientServerTick();
+bool captureClientServerTick(const void* level);
 
 } // namespace dobby

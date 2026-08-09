@@ -185,6 +185,8 @@ extern "C" void dobby_capture_entity_hitbox(
 
     const void* level = readObjectField<const void*>(
             actor, target::kActorLevelOffset);
+    if (runtimeState().networkMetricsOverlay())
+        observeClientLevelForMetrics(level);
     rememberOverlayLevelIdentity(level);
     const std::uint64_t presentation = entityHitboxPresentationFrame();
     if (lastBatchCaptureFrame.load(std::memory_order_acquire) == presentation)

@@ -5,6 +5,7 @@
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"
 #include "hooks/minecraft_image.hpp"
+#include "hooks/network_metrics_hook.hpp"
 #include "hooks/ore_esp_scanner.hpp"
 #include "hooks/overlay_camera_hook.hpp"
 #include "metrics/network_metrics.hpp"
@@ -340,11 +341,13 @@ void chunkLoadedDetour(void* coordinator, void* source, void* chunk) {
         return;
     ChunkIdentity identity{};
     if (readChunkIdentity(chunk, identity)) {
+        observeClientLevelForMetrics(identity.level);
         if (metricsEnabled) {
             recordClientChunkLoaded(
                     identity.level, identity.position.x, identity.position.z);
         }
-        rememberOverlayLevelIdentity(identity.level);
+        if (chestEnabled || oreEnabled)
+            rememberOverlayLevelIdentity(identity.level);
         if (chestEnabled)
             trackLoadedChunk(identity);
         if (oreEnabled)
@@ -369,11 +372,13 @@ void subChunkLoadedDetour(
         return;
     ChunkIdentity identity{};
     if (readChunkIdentity(chunk, identity)) {
+        observeClientLevelForMetrics(identity.level);
         if (metricsEnabled) {
             recordClientChunkLoaded(
                     identity.level, identity.position.x, identity.position.z);
         }
-        rememberOverlayLevelIdentity(identity.level);
+        if (chestEnabled || oreEnabled)
+            rememberOverlayLevelIdentity(identity.level);
         if (chestEnabled)
             trackLoadedChunk(identity);
         if (oreEnabled) {

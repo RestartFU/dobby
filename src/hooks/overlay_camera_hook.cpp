@@ -39,13 +39,13 @@ extern "C" void dobby_capture_level_render_camera(
     if (!firstEntryLogged.exchange(true, std::memory_order_acq_rel))
         logLine("developer overlay: inline level render callback observed");
 
-    const void* level = observedLevel.load(std::memory_order_acquire);
-    if (level == nullptr)
+    if (metricsEnabled)
+        captureObservedClientServerTick();
+    if (!espEnabled)
         return;
 
-    if (metricsEnabled)
-        captureClientServerTick(level);
-    if (!espEnabled)
+    const void* level = observedLevel.load(std::memory_order_acquire);
+    if (level == nullptr)
         return;
 
     CameraFrame camera{};

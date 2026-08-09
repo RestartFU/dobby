@@ -445,6 +445,24 @@ void testNetworkMetrics() {
     assert(text.pending == "PENDING 7");
     metrics.recordChunkUnloaded(0x1000, -2, 7);
     assert(metrics.snapshot(2500).loadedChunks == 1);
+
+    dobby::NetworkMetricsTracker noChunkTraffic;
+    for (std::uint64_t elapsed = 0; elapsed <= 300'000; elapsed += 100) {
+        if (elapsed % 1'000 == 0)
+            noChunkTraffic.recordPing(35, 35, 300'000 + elapsed);
+        noChunkTraffic.recordServerTick(
+                6'000 + elapsed / 50, 300'000 + elapsed);
+    }
+    const auto noChunkSnapshot = noChunkTraffic.snapshot(600'000);
+    require(noChunkSnapshot.observedTicksPerSecond == 20.0);
+    require(noChunkSnapshot.loadedChunks == 0);
+    require(noChunkSnapshot.chunksPerSecond == 0);
+    noChunkTraffic.recordChunkLoaded(0x1000, 4, 7);
+    noChunkTraffic.resetWorld();
+    const auto resetWorldSnapshot = noChunkTraffic.snapshot(600'000);
+    require(resetWorldSnapshot.connected);
+    require(!resetWorldSnapshot.observedTicksPerSecond);
+    require(resetWorldSnapshot.loadedChunks == 0);
     const auto geometry = dobby::buildNetworkMetricsGeometry(
             snapshot, 1280.0F, 720.0F);
     assert(!geometry.shadowVertices.empty());

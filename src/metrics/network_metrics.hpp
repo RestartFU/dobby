@@ -33,7 +33,7 @@ public:
     void recordSubChunkResponse(std::uint64_t count);
     NetworkMetricsSnapshot snapshot(std::uint64_t nowMilliseconds) const;
     void reset();
-    void resetServerTicks();
+    void resetWorld();
     std::size_t retainedTickSamples() const;
 
 private:
