@@ -1,6 +1,7 @@
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"
 #include "hooks/packet_hooks.hpp"
+#include "hooks/entity_hitbox_hook.hpp"
 #include "platform/log.hpp"
 
 #include <atomic>
@@ -28,6 +29,7 @@ extern "C" [[gnu::visibility("default")]] void mod_init() {
     static_cast<void>(dobby::runtimeState());
     dobby::installPacketHooks();
 #if defined(__ANDROID__)
+    dobby::installEntityHitboxHook();
     dobby::registerDeveloperUi();
 #endif
 }

@@ -8,11 +8,14 @@ namespace dobby {
 
 struct MinecraftImage {
     std::uintptr_t base{};
+    std::uintptr_t loadBegin{};
+    std::uintptr_t loadEnd{};
     std::uintptr_t executableBegin{};
     std::uintptr_t executableEnd{};
 };
 
 MinecraftImage findMinecraftImage();
+bool addressIsInImage(const MinecraftImage& image, std::uintptr_t address);
 bool addressIsExecutable(const MinecraftImage& image, std::uintptr_t address);
 
 template <std::size_t Size>

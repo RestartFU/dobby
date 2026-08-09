@@ -75,6 +75,22 @@ bool RuntimeState::toggleVerbose() {
     return !verbose_.exchange(!verbose(), std::memory_order_relaxed);
 }
 
+bool RuntimeState::entityHitboxes() const {
+    return entityHitboxes_.load(std::memory_order_relaxed);
+}
+
+void RuntimeState::setEntityHitboxes(bool enabled) {
+    entityHitboxes_.store(enabled, std::memory_order_relaxed);
+}
+
+bool RuntimeState::entityHitboxesAvailable() const {
+    return entityHitboxesAvailable_.load(std::memory_order_relaxed);
+}
+
+void RuntimeState::setEntityHitboxesAvailable(bool available) {
+    entityHitboxesAvailable_.store(available, std::memory_order_relaxed);
+}
+
 RuntimeState& runtimeState() {
     static RuntimeState state;
     return state;

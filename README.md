@@ -3,11 +3,11 @@
 Compact Minecraft Bedrock developer client for macOS
 [mcpelauncher](https://github.com/minecraft-linux/mcpelauncher-manifest).
 
-It captures packet violations, Bedrock's exact packet-end or truncated-read boundary, primitive read traces, and raw packet bytes from an in-game developer menu.
+It captures packet violations and raw decode evidence, and can display Bedrock's native entity and player hitboxes in game.
 
 ## In-game diagnostic
 
-`Mods > Dobby` provides the rejected packet, Bedrock reason, expected wire structure, decoder offset, hook status, copy actions, and developer toggles without leaving the game. Repeated disconnects always create a new popup.
+`Mods > Dobby` contains toggles for automatic violation popups and colored entity hitboxes. Packet reports contain the client-observed reason, decode boundary, read trace, and raw bytes. Repeated disconnects always create a new popup.
 
 ![Packet rejection diagnostic window](media/image.png)
 

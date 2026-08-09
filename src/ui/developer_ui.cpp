@@ -1,4 +1,5 @@
 #include "ui/developer_ui.hpp"
+#include "ui/entity_hitbox_overlay.hpp"
 #include "ui/window_policy.hpp"
 
 #if defined(__ANDROID__)
@@ -6,6 +7,7 @@
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"
 #include "diagnostics/report_builder.hpp"
+#include "hooks/entity_hitbox_hook.hpp"
 #include "network/packet_names.hpp"
 #include "platform/files.hpp"
 #include "platform/launcher.hpp"
@@ -22,6 +24,7 @@ constexpr char kStatusWindowTitle[] = "Dobby##dobby_status_v2";
 
 bool menuUnselected(void*) { return false; }
 bool autoPopupSelected(void*) { return runtimeState().autoPopup(); }
+bool entityHitboxesSelected(void*) { return runtimeState().entityHitboxes(); }
 
 void windowClosed(void*) { verboseLine("developer window closed"); }
 
@@ -68,6 +71,10 @@ void toggleAutoPopup(void*) {
     const bool enabled = runtimeState().toggleAutoPopup();
     logLine(enabled ? "UI: automatic violation popups enabled"
                     : "UI: automatic violation popups disabled");
+}
+
+void toggleHitboxes(void*) {
+    static_cast<void>(toggleEntityHitboxes());
 }
 
 } // namespace
@@ -141,6 +148,10 @@ void showLatestViolation(void*) {
 void registerDeveloperUi() {
     resolveLauncherApi();
     installDobbyWindowPolicy();
+    const bool overlayReady = entityHitboxHookInstalled() && installEntityHitboxOverlay();
+    runtimeState().setEntityHitboxesAvailable(overlayReady);
+    if (overlayReady)
+        logLine("entity hitboxes enabled by default");
     logLine(launcherWindowAvailable() ? "UI: launcher window API ready"
                                       : "ERROR: launcher window API unavailable");
     logLine(launcherClipboardAvailable() ? "UI: native clipboard ready"
@@ -150,7 +161,9 @@ void registerDeveloperUi() {
         return;
     }
 
-    static std::array<LauncherMenuEntry, 1> subentries{
+    static std::array<LauncherMenuEntry, 2> subentries{
+            LauncherMenuEntry{
+                    "Entity hitboxes", nullptr, entityHitboxesSelected, toggleHitboxes, 0, nullptr},
             LauncherMenuEntry{"Automatic popup", nullptr, autoPopupSelected, toggleAutoPopup, 0, nullptr},
     };
     static LauncherMenuEntry root{

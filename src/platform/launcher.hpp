@@ -59,6 +59,7 @@ bool launcherMenuAvailable();
 bool launcherClipboardAvailable();
 void* resolveHostSymbol(const char* name);
 bool addLauncherSwapBuffersCallback(void* user, LauncherSwapBuffersCallback callback);
+bool launcherSurfaceSize(void* display, void* surface, int& width, int& height);
 void addLauncherMenu(std::span<LauncherMenuEntry> entries);
 void showLauncherWindow(
         const char* title, std::span<LauncherControl> controls,

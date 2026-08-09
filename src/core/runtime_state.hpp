@@ -36,6 +36,10 @@ public:
     bool toggleAutoPopup();
     bool verbose() const;
     bool toggleVerbose();
+    bool entityHitboxes() const;
+    void setEntityHitboxes(bool enabled);
+    bool entityHitboxesAvailable() const;
+    void setEntityHitboxesAvailable(bool available);
 
 private:
     mutable std::mutex mutex_;
@@ -46,6 +50,8 @@ private:
     std::atomic_bool streamProbeInstalled_{false};
     std::atomic_bool autoPopup_{true};
     std::atomic_bool verbose_{false};
+    std::atomic_bool entityHitboxes_{true};
+    std::atomic_bool entityHitboxesAvailable_{false};
     std::atomic_size_t totalViolations_{0};
 };
 

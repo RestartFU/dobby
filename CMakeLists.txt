@@ -14,12 +14,14 @@ set(DOBBY_COMMON_SOURCES
     src/diagnostics/stream_probe.cpp
     src/diagnostics/violation_decoder.cpp
     src/platform/files.cpp
+    src/ui/entity_hitbox_overlay.cpp
     src/ui/window_policy.cpp)
 
 if(ANDROID)
     add_library(dobby SHARED
         src/dobby.cpp
         ${DOBBY_COMMON_SOURCES}
+        src/hooks/entity_hitbox_hook.cpp
         src/hooks/minecraft_image.cpp
         src/hooks/packet_hooks.cpp
         src/platform/launcher.cpp

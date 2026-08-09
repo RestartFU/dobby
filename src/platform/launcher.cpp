@@ -16,11 +16,13 @@ using ShowWindowFn = void (*)(
         const char* title, int isModal, void* user, void (*onClose)(void* user),
         int count, LauncherControl* controls);
 using AddSwapBuffersCallbackFn = void (*)(void* user, LauncherSwapBuffersCallback callback);
+using EglQuerySurfaceFn = unsigned int (*)(void* display, void* surface, int attribute, int* value);
 
 HostSetClipboardTextFn hostSetClipboardText = nullptr;
 AddMenuFn launcherAddMenu = nullptr;
 ShowWindowFn launcherShowWindow = nullptr;
 AddSwapBuffersCallbackFn launcherAddSwapBuffersCallback = nullptr;
+EglQuerySurfaceFn eglQuerySurface = nullptr;
 
 } // namespace
 
@@ -48,6 +50,16 @@ void resolveLauncherApi() {
         if (gameWindowLibrary != nullptr) {
             launcherAddSwapBuffersCallback = reinterpret_cast<AddSwapBuffersCallbackFn>(
                     dlsym(gameWindowLibrary, "game_window_add_swap_buffers_callback"));
+        }
+    }
+
+    if (eglQuerySurface == nullptr) {
+        void* eglLibrary = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
+        if (eglLibrary == nullptr)
+            eglLibrary = dlopen("libEGL.so", RTLD_NOW);
+        if (eglLibrary != nullptr) {
+            eglQuerySurface = reinterpret_cast<EglQuerySurfaceFn>(
+                    dlsym(eglLibrary, "eglQuerySurface"));
         }
     }
 
@@ -80,6 +92,18 @@ bool addLauncherSwapBuffersCallback(void* user, LauncherSwapBuffersCallback call
         return false;
     launcherAddSwapBuffersCallback(user, callback);
     return true;
+}
+
+bool launcherSurfaceSize(void* display, void* surface, int& width, int& height) {
+    resolveLauncherApi();
+    constexpr int eglWidth = 0x3057;
+    constexpr int eglHeight = 0x3056;
+    width = 0;
+    height = 0;
+    return eglQuerySurface != nullptr && surface != nullptr &&
+            eglQuerySurface(display, surface, eglWidth, &width) != 0U &&
+            eglQuerySurface(display, surface, eglHeight, &height) != 0U &&
+            width > 0 && height > 0;
 }
 
 void addLauncherMenu(std::span<LauncherMenuEntry> entries) {

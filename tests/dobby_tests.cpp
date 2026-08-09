@@ -1,10 +1,12 @@
 #include "core/config.hpp"
+#include "core/constants.hpp"
 #include "core/runtime_state.hpp"
 #include "diagnostics/client_schema_trace.hpp"
 #include "diagnostics/report_builder.hpp"
 #include "diagnostics/stream_probe.hpp"
 #include "diagnostics/violation_decoder.hpp"
 #include "network/packet_names.hpp"
+#include "ui/entity_hitbox_overlay.hpp"
 #include "ui/window_policy.hpp"
 
 #include <array>
@@ -155,6 +157,79 @@ void testRepeatViolationsAreRetained() {
     state.clearDiagnostics();
 }
 
+void testEntityHitboxState() {
+    auto& state = dobby::runtimeState();
+    state.setEntityHitboxesAvailable(false);
+    state.setEntityHitboxes(false);
+    assert(!state.entityHitboxesAvailable());
+    assert(!state.entityHitboxes());
+    state.setEntityHitboxesAvailable(true);
+    state.setEntityHitboxes(true);
+    assert(state.entityHitboxesAvailable());
+    assert(state.entityHitboxes());
+    state.setEntityHitboxes(false);
+}
+
+void testEntityProjection() {
+    static_assert(sizeof(dobby::EntityAabb) == 24);
+    static_assert(dobby::target::kActorGetAabbOffset == 0x0ec86fb4);
+    static_assert(dobby::target::kActorGetAabbSignature[1] == 0x08);
+    static_assert(dobby::target::kCameraProjectionStackOffset == 0x90);
+    static_assert(dobby::target::kCameraRightOffset == 0x118);
+    static_assert(dobby::target::kCameraPositionOffset == 0x13c);
+    static_assert(dobby::target::kViewMatrixGetterOffset == 0x0a5d8ba4);
+    static_assert(dobby::target::kCameraPositionGetterOffset == 0x0a5d8b70);
+    static_assert(dobby::target::kActorLevelOffset == 0x1d0);
+    static_assert(dobby::target::kActorGetLevelOffset == 0x0eca7920);
+    static_assert(dobby::target::kLevelGetRuntimeActorListOffset == 0x0f226d10);
+    static_assert(dobby::target::kLevelGetRuntimeActorListVtableSlot == 326);
+    static_assert(dobby::target::kLevelForEachPlayerOffset == 0x0f225e4c);
+    static_assert(dobby::target::kLevelForEachPlayerVtableSlot == 223);
+    static_assert(dobby::target::kLevelGetPrimaryLocalPlayerOffset == 0x0f225818);
+    static_assert(dobby::target::kLevelGetPrimaryLocalPlayerVtableSlot == 77);
+    static_assert(dobby::target::kClientLevelVtableOffset == 0x11ed28b0);
+    const dobby::CameraFrame camera{
+            {0.0F, 0.0F, 0.0F},
+            {{1.0F, 0.0F, 0.0F, 0.0F,
+              0.0F, 1.0F, 0.0F, 0.0F,
+              0.0F, 0.0F, 1.0F, 0.0F,
+              0.0F, 0.0F, 0.0F, 1.0F}},
+            {{0.5625F, 0.0F, 0.0F, 0.0F,
+              0.0F, 1.0F, 0.0F, 0.0F,
+              0.0F, 0.0F, -1.0F, -1.0F,
+              0.0F, 0.0F, -0.2F, 0.0F}},
+    };
+    dobby::ScreenPoint center{};
+    const bool centerProjected = dobby::projectWorldPoint(
+            camera, {0.0F, 0.0F, -5.0F}, 1920.0F, 1080.0F, center);
+    assert(centerProjected);
+    assert(center.x == 960.0F);
+    assert(center.y == 540.0F);
+
+    dobby::ScreenPoint right{};
+    const bool rightProjected = dobby::projectWorldPoint(
+            camera, {1.0F, 0.0F, -5.0F}, 1920.0F, 1080.0F, right);
+    assert(rightProjected);
+    assert(right.x > center.x);
+    dobby::ScreenPoint behind{};
+    const bool behindProjected = dobby::projectWorldPoint(
+            camera, {0.0F, 0.0F, 1.0F}, 1920.0F, 1080.0F, behind);
+    assert(!behindProjected);
+    const float projection[16]{
+            0.5625F, 0.0F, 0.0F, 0.0F,
+            0.0F, 1.0F, 0.0F, 0.0F,
+            0.0F, 0.0F, -1.0F, -1.0F,
+            0.0F, 0.0F, -0.2F, 0.0F,
+    };
+    static_cast<void>(centerProjected);
+    static_cast<void>(rightProjected);
+    static_cast<void>(behindProjected);
+    static_cast<void>(center);
+    static_cast<void>(right);
+    static_cast<void>(behind);
+    static_cast<void>(projection);
+}
+
 void testConfigurationAndPacketCatalog() {
     assert(dobby::parseBoolean("true", false));
     assert(!dobby::parseBoolean("off", true));
@@ -188,6 +263,8 @@ int main() {
     testStreamProbeAndReport();
     testClientSchemaFieldTrace();
     testRepeatViolationsAreRetained();
+    testEntityHitboxState();
+    testEntityProjection();
     testConfigurationAndPacketCatalog();
     testDobbyWindowPolicy();
     std::cout << "Dobby tests passed\n";
