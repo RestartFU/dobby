@@ -10,6 +10,7 @@
 #include "network/packet_names.hpp"
 #include "metrics/network_metrics.hpp"
 #include "platform/preferences_store.hpp"
+#include "ui/chest_esp.hpp"
 #include "ui/entity_hitbox_overlay.hpp"
 #include "ui/network_metrics_overlay.hpp"
 #include "ui/window_policy.hpp"
@@ -180,10 +181,15 @@ void testEntityHitboxState() {
     assert(state.entityHitboxesAvailable());
     assert(state.entityHitboxes());
     state.setEntityHitboxes(false);
+    state.setChestEspAvailable(true);
+    const bool chestInitiallyVisible = state.chestEsp();
+    require(state.toggleChestEsp() != chestInitiallyVisible);
+    require(state.toggleChestEsp() == chestInitiallyVisible);
     const bool metricsInitiallyVisible = state.networkMetricsOverlay();
     assert(state.toggleNetworkMetricsOverlay() != metricsInitiallyVisible);
     assert(state.toggleNetworkMetricsOverlay() == metricsInitiallyVisible);
     static_cast<void>(metricsInitiallyVisible);
+    static_cast<void>(chestInitiallyVisible);
 }
 
 void testEntityProjection() {
@@ -248,6 +254,77 @@ void testEntityProjection() {
     static_cast<void>(right);
     static_cast<void>(behind);
     static_cast<void>(projection);
+}
+
+void testChestEspRegistry() {
+    static_assert(dobby::target::kLevelChunkPositionOffset == 0x50);
+    static_assert(dobby::target::kLevelChunkLevelOffset == 0x28);
+    static_assert(dobby::target::kBlockActorPositionOffset == 0x08);
+    static_assert(
+            dobby::target::kChestBlockActorDestructorVtableSlot == 0);
+    static_assert(
+            dobby::target::kChestBlockActorDeletingDestructorVtableSlot == 1);
+
+    require(dobby::subChunkStorageIndex(0, 0, 0) == 0);
+    require(dobby::subChunkStorageIndex(1, 2, 3) == 0x132);
+    require(dobby::subChunkStorageIndex(15, 15, 15) == 0x0fff);
+    require(dobby::worldBlockPosition({-2, 7}, -4, 3, 5, 9) ==
+            dobby::BlockPosition{-29, -59, 121});
+
+    dobby::ChunkChestRegistry registry(2, 3);
+    const auto* level = reinterpret_cast<const void*>(0x1000);
+    require(registry.replaceSubChunk(
+                    level, {-2, 7}, -4,
+                    {{-29, -59, 121}, {-20, -58, 126}}) ==
+            dobby::ChunkChestUpdateResult::accepted);
+    require(registry.replaceSubChunk(
+                    level, {-1, 7}, -4, {{-15, -60, 112}}) ==
+            dobby::ChunkChestUpdateResult::accepted);
+    require(registry.snapshot(level).size() == 3);
+    require(registry.sizeForLevel(level) == 3);
+    require(registry.sizeForLevel(
+                    reinterpret_cast<const void*>(0x2000)) == 0);
+    require(registry.snapshot(level).size() == 3);
+
+    require(registry.replaceSubChunk(
+                    level, {-2, 7}, -4, {{-28, -57, 122}}) ==
+            dobby::ChunkChestUpdateResult::accepted);
+    auto positions = registry.snapshot(level);
+    require(positions.size() == 2);
+    require(std::find(positions.begin(), positions.end(),
+                      dobby::BlockPosition{-29, -59, 121}) == positions.end());
+    require(std::find(positions.begin(), positions.end(),
+                      dobby::BlockPosition{-28, -57, 122}) != positions.end());
+
+    require(registry.replaceSubChunk(
+                    level, {0, 7}, -4, {{0, -60, 112}}) ==
+            dobby::ChunkChestUpdateResult::chunkCapacityReached);
+    require(registry.replaceSubChunk(
+                    level, {-2, 7}, -3,
+                    {{-31, -48, 112}, {-30, -48, 112}}) ==
+            dobby::ChunkChestUpdateResult::positionCapacityReached);
+    require(registry.replaceSubChunk(
+                    level, {-2, 7}, -3, {{30'000'001, 64, 0}}) ==
+            dobby::ChunkChestUpdateResult::invalidInput);
+
+    registry.removeChunk(level, {-2, 7});
+    require(registry.snapshot(level).size() == 1);
+    require(registry.snapshot(reinterpret_cast<const void*>(0x2000)).empty());
+    registry.clear();
+    require(registry.size() == 0);
+
+    require(dobby::chunkPositionForBlock({-1, -1, 127}) ==
+            dobby::ChunkPosition{-1, 7});
+    require(dobby::absoluteSubChunkForBlock({-1, -1, 127}) == -1);
+    require(registry.add(level, {-1, -1, 127}) ==
+            dobby::ChunkChestUpdateResult::accepted);
+    require(registry.add(level, {-1, -1, 127}) ==
+            dobby::ChunkChestUpdateResult::accepted);
+    require(registry.size() == 1);
+    registry.remove(level, {-1, -1, 127});
+    require(registry.size() == 0);
+    require(registry.add(nullptr, {-1, -1, 127}) ==
+            dobby::ChunkChestUpdateResult::invalidInput);
 }
 
 void testNetworkMetrics() {
@@ -343,6 +420,7 @@ void testDeveloperPreferences() {
     const dobby::DeveloperPreferences defaults{
             .autoPopup = true,
             .entityHitboxes = true,
+            .chestEsp = false,
             .networkMetricsOverlay = true,
     };
 
@@ -350,21 +428,25 @@ void testDeveloperPreferences() {
             "version=1\n"
             "automatic_popup=off\n"
             "entity_hitboxes=false\n"
+            "chest_esp=true\n"
             "network_metrics=0\n",
             defaults);
     require(!parsed.autoPopup);
     require(!parsed.entityHitboxes);
+    require(parsed.chestEsp);
     require(!parsed.networkMetricsOverlay);
 
     const auto malformed = dobby::parseDeveloperPreferences(
             "version=1\n"
             "automatic_popup=invalid\n"
             "entity_hitboxes=maybe\n"
+            "chest_esp=unknown\n"
             "network_metrics=unknown\n"
             "future_setting=false\n",
             defaults);
     require(malformed.autoPopup);
     require(malformed.entityHitboxes);
+    require(!malformed.chestEsp);
     require(malformed.networkMetricsOverlay);
 
     const auto unsupported = dobby::parseDeveloperPreferences(
@@ -405,6 +487,7 @@ int main() {
     testRepeatViolationsAreRetained();
     testEntityHitboxState();
     testEntityProjection();
+    testChestEspRegistry();
     testNetworkMetrics();
     testConfigurationAndPacketCatalog();
     testDeveloperPreferences();

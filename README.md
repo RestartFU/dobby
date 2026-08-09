@@ -3,11 +3,13 @@
 Compact Minecraft Bedrock developer client for macOS
 [mcpelauncher](https://github.com/minecraft-linux/mcpelauncher-manifest).
 
-It captures packet violations and raw decode evidence, displays Bedrock's native entity and player hitboxes, and shows native RakNet ping with an observed server-tick rate.
+It captures packet violations and raw decode evidence, displays entity/player hitboxes, outlines client-known chests, and shows native RakNet and chunk metrics.
 
 ## In-game diagnostic
 
 `Mods > Dobby` contains the network-metrics overlay. The compact top-right overlay shows native `PING`, client-observed `TPS~`, cumulative `LevelChunk` packets with their one-second rate, and outstanding subchunk requests while connected.
+
+`Chest ESP` outlines chests found in Bedrock's decoded client chunk storage. It does not request or modify world data, so concealed chests appear only if the server actually sent them.
 
 Menu toggles are saved locally and restored on the next launch.
 

@@ -14,10 +14,12 @@ RuntimeState::RuntimeState()
     const DeveloperPreferences preferences = loadDeveloperPreferences({
             .autoPopup = config().autoPopup,
             .entityHitboxes = true,
+            .chestEsp = true,
             .networkMetricsOverlay = true,
     });
     autoPopup_.store(preferences.autoPopup, std::memory_order_relaxed);
     entityHitboxes_.store(preferences.entityHitboxes, std::memory_order_relaxed);
+    chestEsp_.store(preferences.chestEsp, std::memory_order_relaxed);
     networkMetricsOverlay_.store(
             preferences.networkMetricsOverlay, std::memory_order_relaxed);
 }
@@ -102,6 +104,22 @@ void RuntimeState::setEntityHitboxesAvailable(bool available) {
     entityHitboxesAvailable_.store(available, std::memory_order_relaxed);
 }
 
+bool RuntimeState::chestEsp() const {
+    return chestEsp_.load(std::memory_order_relaxed);
+}
+
+bool RuntimeState::toggleChestEsp() {
+    return !chestEsp_.exchange(!chestEsp(), std::memory_order_relaxed);
+}
+
+bool RuntimeState::chestEspAvailable() const {
+    return chestEspAvailable_.load(std::memory_order_relaxed);
+}
+
+void RuntimeState::setChestEspAvailable(bool available) {
+    chestEspAvailable_.store(available, std::memory_order_relaxed);
+}
+
 bool RuntimeState::networkMetricsOverlay() const {
     return networkMetricsOverlay_.load(std::memory_order_relaxed);
 }
@@ -115,6 +133,7 @@ DeveloperPreferences RuntimeState::developerPreferences() const {
     return {
             .autoPopup = autoPopup(),
             .entityHitboxes = entityHitboxes(),
+            .chestEsp = chestEsp(),
             .networkMetricsOverlay = networkMetricsOverlay(),
     };
 }

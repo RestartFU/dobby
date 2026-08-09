@@ -1,4 +1,5 @@
 #include "ui/entity_hitbox_overlay.hpp"
+#include "ui/chest_esp.hpp"
 
 #include <algorithm>
 #include <array>
@@ -69,9 +70,20 @@ struct CapturedBox {
 std::mutex captureMutex;
 std::unordered_map<std::uintptr_t, CapturedBox> capturedBoxes;
 std::uintptr_t capturedLevel{};
+CameraFrame latestCamera{};
+std::uintptr_t latestCameraLevel{};
+std::uint64_t latestCameraFrame{};
 std::atomic_uint64_t presentationFrame{};
 
 } // namespace
+
+bool validCameraFrame(const CameraFrame& camera) {
+    return validCamera(camera);
+}
+
+bool validEntityBounds(const EntityAabb& bounds) {
+    return validBounds(bounds);
+}
 
 bool projectWorldPoint(
         const CameraFrame& camera, const Vec3f& world, float width, float height,
@@ -124,6 +136,29 @@ HitboxSubmissionResult submitEntityHitbox(
     capturedBoxes[entity] = {
             bounds, camera, presentationFrame.load(std::memory_order_relaxed)};
     return HitboxSubmissionResult::accepted;
+}
+
+void submitOverlayCamera(
+        const void* levelIdentity, const CameraFrame& camera) {
+    if (levelIdentity == nullptr || !validCamera(camera))
+        return;
+    std::lock_guard lock(captureMutex);
+    latestCamera = camera;
+    latestCameraLevel = reinterpret_cast<std::uintptr_t>(levelIdentity);
+    latestCameraFrame = presentationFrame.load(std::memory_order_relaxed);
+}
+
+bool currentOverlayCamera(
+        std::uint64_t currentFrame, const void*& levelIdentity,
+        CameraFrame& camera) {
+    std::lock_guard lock(captureMutex);
+    if (latestCameraLevel == 0 ||
+        !entityHitboxObservedForPresentation(currentFrame, latestCameraFrame)) {
+        return false;
+    }
+    levelIdentity = reinterpret_cast<const void*>(latestCameraLevel);
+    camera = latestCamera;
+    return true;
 }
 
 std::uint64_t entityHitboxPresentationFrame() {
@@ -203,6 +238,8 @@ std::atomic_bool failedProjectionLogged{false};
 std::atomic_bool successfulProjectionLogged{false};
 std::atomic_bool presentationSampleLogged{false};
 std::atomic_bool rendererFailureLogged{false};
+std::atomic_bool chestPresentationLogged{false};
+std::atomic_bool chestLevelMismatchLogged{false};
 std::size_t largestBatchLogged = 0;
 std::size_t batchSamplesLogged = 0;
 
@@ -367,13 +404,14 @@ void drawLines(const float* vertices, std::size_t floatCount,
 
 void drawEntityHitboxes(void*, void* display, void* surface) {
     const bool showHitboxes = runtimeState().entityHitboxes();
+    const bool showChests = runtimeState().chestEsp();
     const NetworkMetricsSnapshot metrics = runtimeState().networkMetricsOverlay()
             ? currentNetworkMetrics() : NetworkMetricsSnapshot{};
     std::vector<CapturedBox> boxes;
+    const std::uint64_t currentFrame =
+            presentationFrame.fetch_add(1, std::memory_order_acq_rel) + 1;
     {
         std::lock_guard lock(captureMutex);
-        const std::uint64_t currentFrame =
-                presentationFrame.fetch_add(1, std::memory_order_acq_rel) + 1;
         for (auto entry = capturedBoxes.begin(); entry != capturedBoxes.end();) {
             if (!entityHitboxObservedForPresentation(
                         currentFrame, entry->second.lastSeenFrame)) {
@@ -386,6 +424,33 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
     }
     if (!showHitboxes)
         boxes.clear();
+    std::vector<ChestEspObservation> chests;
+    const void* cameraLevel = nullptr;
+    CameraFrame chestCamera{};
+    if (showChests && currentOverlayCamera(
+                              currentFrame, cameraLevel, chestCamera)) {
+        chests = snapshotClientKnownChests(cameraLevel, chestCamera);
+        if (!chests.empty() && !chestPresentationLogged.exchange(
+                                       true, std::memory_order_acq_rel)) {
+            char message[128]{};
+            std::snprintf(
+                    message, sizeof(message),
+                    "chest ESP presentation: %zu client-known chest(s)",
+                    chests.size());
+            logLine(message);
+        } else if (chests.empty() && clientKnownChestCount() != 0 &&
+                   !chestLevelMismatchLogged.exchange(
+                           true, std::memory_order_acq_rel)) {
+            char message[192]{};
+            std::snprintf(
+                    message, sizeof(message),
+                    "ERROR: chest ESP level mismatch: registry=%zu "
+                    "camera_level=%zu",
+                    clientKnownChestCount(),
+                    clientKnownChestCountForLevel(cameraLevel));
+            logLine(message);
+        }
+    }
     if (!overlayInstalled.load(std::memory_order_acquire)) {
         return;
     }
@@ -409,7 +474,7 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
         return;
     const NetworkMetricsGeometry metricsGeometry =
             buildNetworkMetricsGeometry(metrics, width, height);
-    if (boxes.empty() && metricsGeometry.shadowVertices.empty())
+    if (boxes.empty() && chests.empty() && metricsGeometry.shadowVertices.empty())
         return;
 
     if (boxes.size() > largestBatchLogged && batchSamplesLogged < 8) {
@@ -452,6 +517,8 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
     }};
     std::vector<float> vertices;
     vertices.reserve(boxes.size() * edges.size() * 4);
+    std::vector<float> chestVertices;
+    chestVertices.reserve(chests.size() * edges.size() * 4);
     std::vector<float> locatorVertices;
     locatorVertices.reserve(boxes.size() * 24);
     const auto appendScreenLine = [&](float x1, float y1, float x2, float y2) {
@@ -516,6 +583,26 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
             appendScreenLine(centerX, centerY - halfCross,
                              centerX, centerY + halfCross);
             ++locatorCount;
+        }
+    }
+    for (const auto& chest : chests) {
+        const auto worldCorners = corners(chest.bounds);
+        std::array<ScreenPoint, 8> screenCorners{};
+        std::array<bool, 8> visible{};
+        for (std::size_t index = 0; index < worldCorners.size(); ++index) {
+            visible[index] = projectWorldPoint(
+                    chest.camera, worldCorners[index], width, height,
+                    screenCorners[index]);
+        }
+        for (const auto& edge : edges) {
+            if (!visible[edge[0]] || !visible[edge[1]])
+                continue;
+            for (const std::size_t index : edge) {
+                chestVertices.push_back(
+                        screenCorners[index].x / width * 2.0F - 1.0F);
+                chestVertices.push_back(
+                        1.0F - screenCorners[index].y / height * 2.0F);
+            }
         }
     }
     auto& projectionFlag = vertices.empty()
@@ -587,6 +674,12 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
     if (!vertices.empty()) {
         drawLines(vertices.data(), vertices.size(), 0.0F, 0.0F, 0.0F, 0.85F, 6.0F);
         drawLines(vertices.data(), vertices.size(), 0.25F, 1.0F, 0.25F, 1.0F, 3.0F);
+    }
+    if (!chestVertices.empty()) {
+        drawLines(chestVertices.data(), chestVertices.size(),
+                  0.0F, 0.0F, 0.0F, 0.9F, 7.0F);
+        drawLines(chestVertices.data(), chestVertices.size(),
+                  1.0F, 0.65F, 0.05F, 1.0F, 3.0F);
     }
     if (!locatorVertices.empty()) {
         drawLines(locatorVertices.data(), locatorVertices.size(), 0.0F, 0.0F, 0.0F, 0.9F, 7.0F);

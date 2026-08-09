@@ -34,12 +34,19 @@ enum class HitboxSubmissionResult {
     frameCapacityReached,
 };
 
+bool validCameraFrame(const CameraFrame& camera);
+bool validEntityBounds(const EntityAabb& bounds);
 bool projectWorldPoint(
         const CameraFrame& camera, const Vec3f& world, float width, float height,
         ScreenPoint& output);
 HitboxSubmissionResult submitEntityHitbox(
         const void* entityIdentity, const void* levelIdentity,
         const EntityAabb& bounds, const CameraFrame& camera);
+void submitOverlayCamera(
+        const void* levelIdentity, const CameraFrame& camera);
+bool currentOverlayCamera(
+        std::uint64_t presentationFrame, const void*& levelIdentity,
+        CameraFrame& camera);
 bool entityHitboxObservedForPresentation(
         std::uint64_t presentationFrame, std::uint64_t lastSeenFrame);
 std::uint64_t entityHitboxPresentationFrame();

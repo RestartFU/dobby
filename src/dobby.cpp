@@ -1,6 +1,7 @@
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"
 #include "hooks/chunk_metrics_hook.hpp"
+#include "hooks/chest_esp_hook.hpp"
 #include "hooks/packet_hooks.hpp"
 #include "hooks/entity_hitbox_hook.hpp"
 #include "hooks/network_metrics_hook.hpp"
@@ -34,6 +35,7 @@ extern "C" [[gnu::visibility("default")]] void mod_init() {
     dobby::installNetworkMetricsHook();
     dobby::installChunkMetricsHooks();
     dobby::installEntityHitboxHook();
+    dobby::installChestEspHook();
     dobby::registerDeveloperUi();
 #endif
 }

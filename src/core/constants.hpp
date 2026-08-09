@@ -6,7 +6,7 @@
 
 namespace dobby {
 
-inline constexpr char kDobbyVersion[] = "2.5.5";
+inline constexpr char kDobbyVersion[] = "2.7.0";
 inline constexpr char kMinecraftVersion[] = "1.26.40.5";
 inline constexpr char kMinecraftBuildId[] = "5893edc8d56c93cbdb50e0f9436320236b78c89d";
 inline constexpr char kAbi[] = "arm64-v8a";
@@ -57,6 +57,113 @@ inline constexpr std::array<std::uint8_t, 16> kActorRenderSignature{
         0xff, 0x43, 0x02, 0xd1, 0xeb, 0x2b, 0x03, 0x6d,
         0xe9, 0x23, 0x04, 0x6d, 0xfd, 0x7b, 0x05, 0xa9};
 
+// RenderChunkCoordinator lifecycle hooks expose the client-decoded LevelChunk
+// after Bedrock has loaded it. No packet is requested, changed, or suppressed.
+inline constexpr std::uintptr_t kChunkCoordinatorOnChunkLoadedOffset = 0x0a169d30;
+inline constexpr std::uintptr_t kChunkCoordinatorOnChunkLoadedSlotOffset = 0x11f4bb90;
+inline constexpr std::array<std::uint8_t, 16> kChunkCoordinatorOnChunkLoadedSignature{
+        0xff, 0x43, 0x02, 0xd1, 0xfd, 0x7b, 0x03, 0xa9,
+        0xfc, 0x6f, 0x04, 0xa9, 0xfa, 0x67, 0x05, 0xa9};
+
+inline constexpr std::uintptr_t kChunkCoordinatorOnSubChunkLoadedOffset = 0x0a16a298;
+inline constexpr std::uintptr_t kChunkCoordinatorOnSubChunkLoadedSlotOffset = 0x11f4bba0;
+inline constexpr std::array<std::uint8_t, 16> kChunkCoordinatorOnSubChunkLoadedSignature{
+        0xff, 0x83, 0x01, 0xd1, 0xfd, 0x7b, 0x02, 0xa9,
+        0xf7, 0x1b, 0x00, 0xf9, 0xf6, 0x57, 0x04, 0xa9};
+
+inline constexpr std::uintptr_t kChunkCoordinatorOnChunkUnloadedOffset = 0x088d72d4;
+inline constexpr std::uintptr_t kChunkCoordinatorOnChunkUnloadedSlotOffset = 0x11f4bba8;
+inline constexpr std::array<std::uint8_t, 4> kChunkCoordinatorOnChunkUnloadedSignature{
+        0xc0, 0x03, 0x5f, 0xd6};
+
+// ChestBlockActor lifecycle targets. RTTI relocation records in the matching
+// Android image identify the primary vtable address point. The constructor and
+// base BlockActor initializer prove that the BlockPos argument is x4 and that
+// the resulting BlockActor stores its position at object + 0x08.
+inline constexpr std::uintptr_t kChestBlockActorConstructorOffset = 0x0fd7cd58;
+inline constexpr std::array<std::uint8_t, 16> kChestBlockActorConstructorSignature{
+        0xfd, 0x7b, 0xbe, 0xa9, 0xf4, 0x4f, 0x01, 0xa9,
+        0xfd, 0x03, 0x00, 0x91, 0xf4, 0x03, 0x03, 0xaa};
+inline constexpr std::uintptr_t kChestBlockActorFactoryOffset = 0x0fd7cf7c;
+inline constexpr std::array<std::uint8_t, 16> kChestBlockActorFactorySignature{
+        0xfd, 0x7b, 0xbd, 0xa9, 0xf6, 0x57, 0x01, 0xa9,
+        0xf4, 0x4f, 0x02, 0xa9, 0xfd, 0x03, 0x00, 0x91};
+inline constexpr std::uintptr_t kChestBlockActorVtableOffset = 0x12371580;
+inline constexpr std::uintptr_t kChestBlockActorDestructorOffset = 0x0fd7ce48;
+inline constexpr std::array<std::uint8_t, 16> kChestBlockActorDestructorSignature{
+        0xfd, 0x7b, 0xbd, 0xa9, 0xf6, 0x57, 0x01, 0xa9,
+        0xf4, 0x4f, 0x02, 0xa9, 0xfd, 0x03, 0x00, 0x91};
+inline constexpr std::uintptr_t kChestBlockActorDeletingDestructorOffset = 0x0fd7cf30;
+inline constexpr std::array<std::uint8_t, 16>
+        kChestBlockActorDeletingDestructorSignature{
+                0xfd, 0x7b, 0xbe, 0xa9, 0xf3, 0x0b, 0x00, 0xf9,
+                0xfd, 0x03, 0x00, 0x91, 0xf3, 0x03, 0x00, 0xaa};
+inline constexpr std::size_t kChestBlockActorDestructorVtableSlot = 0;
+inline constexpr std::size_t kChestBlockActorDeletingDestructorVtableSlot = 1;
+inline constexpr std::uintptr_t kBlockActorPositionLayoutProbeOffset = 0x0fdaae64;
+inline constexpr std::array<std::uint8_t, 24>
+        kBlockActorPositionLayoutProbeSignature{
+                0x48, 0x08, 0x40, 0xb9, 0x49, 0x00, 0x40, 0xf9,
+                0x01, 0x50, 0x00, 0x39, 0x1f, 0xfc, 0x01, 0xa9,
+                0x08, 0x10, 0x00, 0xb9, 0x09, 0x04, 0x00, 0xf9};
+inline constexpr std::ptrdiff_t kBlockActorPositionOffset = 0x08;
+
+// Android arm64 layouts for the exact target build. The generated LeviLamina
+// headers use host-sized standard-library types, so these values are validated
+// independently against instructions in the Android binary before use.
+inline constexpr std::uintptr_t kLevelChunkGetPositionOffset = 0x0f9d05d0;
+inline constexpr std::array<std::uint8_t, 8> kLevelChunkGetPositionSignature{
+        0x00, 0x40, 0x01, 0x91, 0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::uintptr_t kLevelChunkGetLevelOffset = 0x0f9d4204;
+inline constexpr std::array<std::uint8_t, 8> kLevelChunkGetLevelSignature{
+        0x00, 0x14, 0x40, 0xf9, 0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::uintptr_t kLevelChunkSubChunkLayoutProbeOffset = 0x0f9e12a4;
+inline constexpr std::array<std::uint8_t, 32> kLevelChunkSubChunkLayoutProbeSignature{
+        0x08, 0xa4, 0x50, 0xa9, 0x29, 0x01, 0x08, 0xcb,
+        0x29, 0xfd, 0x43, 0x93, 0x2a, 0x7d, 0x0a, 0x9b,
+        0x29, 0x1c, 0x40, 0x92, 0x5f, 0x01, 0x09, 0xeb,
+        0x49, 0x04, 0x00, 0x54, 0x0a, 0x0d, 0x80, 0x52};
+inline constexpr std::uintptr_t kSubChunkAbsoluteIndexAccessorOffset = 0x0f998ea4;
+inline constexpr std::array<std::uint8_t, 8> kSubChunkAbsoluteIndexAccessorSignature{
+        0x00, 0x84, 0x41, 0x39, 0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::uintptr_t kSubChunkStorageLayoutProbeOffset = 0x0f998ed4;
+inline constexpr std::array<std::uint8_t, 48> kSubChunkStorageLayoutProbeSignature{
+        0x28, 0x1c, 0x00, 0x12, 0x1f, 0x09, 0x00, 0x71,
+        0xc1, 0x00, 0x00, 0x54, 0x08, 0x24, 0x43, 0xa9,
+        0x08, 0x01, 0x09, 0xaa, 0x1f, 0x01, 0x00, 0xf1,
+        0xe0, 0x17, 0x9f, 0x1a, 0xc0, 0x03, 0x5f, 0xd6,
+        0x08, 0xc0, 0x00, 0x91, 0x29, 0x1c, 0x40, 0x92,
+        0x08, 0x79, 0x69, 0xf8, 0x1f, 0x01, 0x00, 0xf1};
+inline constexpr std::ptrdiff_t kLevelChunkLevelOffset = 0x28;
+inline constexpr std::ptrdiff_t kLevelChunkPositionOffset = 0x50;
+inline constexpr std::ptrdiff_t kLevelChunkSubChunksOffset = 0x108;
+inline constexpr std::size_t kSubChunkSize = 0x68;
+inline constexpr std::ptrdiff_t kSubChunkStandardStorageOffset = 0x30;
+inline constexpr std::ptrdiff_t kSubChunkAbsoluteIndexOffset = 0x61;
+inline constexpr std::size_t kSubChunkStorageGetElementVtableSlot = 4;
+inline constexpr std::size_t kSubChunkStoragePaletteFilterVtableSlot = 16;
+
+struct SubChunkStorageDispatch {
+    std::uintptr_t vtableAddressPointOffset;
+    std::uintptr_t getElementOffset;
+    std::uintptr_t paletteFilterOffset;
+};
+
+// Exact Android arm64 dispatch tables for Block palette widths supported by
+// this target (uniform, 1, 2, 3, 4, 5, 6, 8, and 16 bits). Unknown storage
+// implementations are rejected before any virtual method is called.
+inline constexpr std::array<SubChunkStorageDispatch, 9>
+        kSubChunkStorageDispatches{{
+                {0x12348140, 0x0f9ae45c, 0x0f9ae954},
+                {0x12348248, 0x0f9aee14, 0x0f9b0d88},
+                {0x12348328, 0x0f9b1468, 0x0f9b3718},
+                {0x12348408, 0x0f9b3ea4, 0x0f9b6d14},
+                {0x123484e8, 0x0f9b7424, 0x0f9b92bc},
+                {0x123485c8, 0x0f9b99c0, 0x0f9bb668},
+                {0x123486a8, 0x0f9bbd00, 0x0f9bdc6c},
+                {0x12348788, 0x0f9be320, 0x0f9bffa8},
+                {0x12348868, 0x0f9c06e4, 0x0f9c2318},
+        }};
 // Returns Actor::mBuiltInComponents.mAABBShapeComponent. AABB is the first
 // member of that component, so its address is also the collision AABB address.
 inline constexpr std::uintptr_t kActorGetAabbOffset = 0x0ec86fb4;

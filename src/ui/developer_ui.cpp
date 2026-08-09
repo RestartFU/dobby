@@ -7,6 +7,7 @@
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"
 #include "diagnostics/report_builder.hpp"
+#include "hooks/chest_esp_hook.hpp"
 #include "hooks/entity_hitbox_hook.hpp"
 #include "network/packet_names.hpp"
 #include "platform/files.hpp"
@@ -26,6 +27,7 @@ constexpr char kStatusWindowTitle[] = "Dobby##dobby_status_v2";
 bool menuUnselected(void*) { return false; }
 bool autoPopupSelected(void*) { return runtimeState().autoPopup(); }
 bool entityHitboxesSelected(void*) { return runtimeState().entityHitboxes(); }
+bool chestEspSelected(void*) { return runtimeState().chestEsp(); }
 bool networkMetricsSelected(void*) { return runtimeState().networkMetricsOverlay(); }
 
 void windowClosed(void*) { verboseLine("developer window closed"); }
@@ -84,6 +86,16 @@ void toggleAutoPopup(void*) {
 void toggleHitboxes(void*) {
     static_cast<void>(toggleEntityHitboxes());
     persistDeveloperPreferences();
+}
+
+void toggleChestEsp(void*) {
+    if (!runtimeState().chestEspAvailable()) {
+        logLine("ERROR: chest ESP is unavailable");
+        return;
+    }
+    const bool enabled = runtimeState().toggleChestEsp();
+    persistDeveloperPreferences();
+    logLine(enabled ? "UI: chest ESP enabled" : "UI: chest ESP disabled");
 }
 
 void toggleNetworkMetrics(void*) {
@@ -167,10 +179,16 @@ void registerDeveloperUi() {
     const bool overlayReady = installEntityHitboxOverlay();
     const bool hitboxesReady = entityHitboxHookInstalled() && overlayReady;
     runtimeState().setEntityHitboxesAvailable(hitboxesReady);
+    const bool chestEspReady = chestEspHookInstalled() && overlayReady;
+    runtimeState().setChestEspAvailable(chestEspReady);
     if (hitboxesReady)
         logLine(runtimeState().entityHitboxes()
                         ? "entity hitboxes enabled"
                         : "entity hitboxes disabled by saved preference");
+    if (chestEspReady)
+        logLine(runtimeState().chestEsp()
+                        ? "chest ESP enabled"
+                        : "chest ESP disabled by saved preference");
     logLine(launcherWindowAvailable() ? "UI: launcher window API ready"
                                       : "ERROR: launcher window API unavailable");
     logLine(launcherClipboardAvailable() ? "UI: native clipboard ready"
@@ -180,9 +198,11 @@ void registerDeveloperUi() {
         return;
     }
 
-    static std::array<LauncherMenuEntry, 3> subentries{
+    static std::array<LauncherMenuEntry, 4> subentries{
             LauncherMenuEntry{
                     "Entity hitboxes", nullptr, entityHitboxesSelected, toggleHitboxes, 0, nullptr},
+            LauncherMenuEntry{
+                    "Chest ESP", nullptr, chestEspSelected, toggleChestEsp, 0, nullptr},
             LauncherMenuEntry{
                     "Network metrics", nullptr, networkMetricsSelected,
                     toggleNetworkMetrics, 0, nullptr},

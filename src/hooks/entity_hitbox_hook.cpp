@@ -6,6 +6,7 @@
 #include "core/runtime_state.hpp"
 #include "hooks/minecraft_image.hpp"
 #include "hooks/network_metrics_hook.hpp"
+#include "hooks/render_camera.hpp"
 #include "platform/launcher.hpp"
 #include "platform/log.hpp"
 #include "ui/entity_hitbox_overlay.hpp"
@@ -13,7 +14,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -28,7 +28,6 @@ namespace dobby {
 namespace {
 
 using ActorGetAabbFn = const EntityAabb* (*)(const void* actor);
-using ContextGetCameraPositionFn = const Vec3f* (*)(const void* renderContext);
 using LevelGetRuntimeActorListFn = std::vector<const void*> (*)(const void* level);
 struct OpaquePlayer;
 using PlayerVisitor = std::function<bool(OpaquePlayer&)>;
@@ -46,7 +45,6 @@ std::atomic_bool registryLayoutRejectedLogged{false};
 std::atomic_bool registryCapacityLogged{false};
 std::atomic_bool playerCapacityLogged{false};
 ActorGetAabbFn actorGetAabb = nullptr;
-ContextGetCameraPositionFn contextGetCameraPosition = nullptr;
 LevelGetRuntimeActorListFn levelGetRuntimeActorList = nullptr;
 LevelForEachPlayerFn levelForEachPlayer = nullptr;
 LevelGetPrimaryLocalPlayerFn levelGetPrimaryLocalPlayer = nullptr;
@@ -61,47 +59,6 @@ Value readObjectField(const void* object, std::ptrdiff_t offset) {
     Value value{};
     std::memcpy(&value, static_cast<const std::byte*>(object) + offset, sizeof(value));
     return value;
-}
-
-bool readMatrixStackTop(
-        const void* stackObject, std::array<float, 16>& output) {
-    if (stackObject == nullptr)
-        return false;
-    const auto* stack = static_cast<const std::byte*>(stackObject);
-    const auto* mapBegin = readObjectField<const std::byte*>(
-            stack, target::kMatrixStackMapBeginOffset);
-    const auto* mapEnd = readObjectField<const std::byte*>(
-            stack, target::kMatrixStackMapEndOffset);
-    const std::size_t start = readObjectField<std::size_t>(
-            stack, target::kMatrixStackStartOffset);
-    const std::size_t size = readObjectField<std::size_t>(
-            stack, target::kMatrixStackSizeOffset);
-    const auto mapBeginAddress = reinterpret_cast<std::uintptr_t>(mapBegin);
-    const auto mapEndAddress = reinterpret_cast<std::uintptr_t>(mapEnd);
-    if (mapBegin == nullptr || mapEnd == nullptr || mapEndAddress <= mapBeginAddress ||
-        (mapEndAddress - mapBeginAddress) % sizeof(void*) != 0 ||
-        mapEndAddress - mapBeginAddress > 128 * sizeof(void*) || size == 0 ||
-        size > 128 || start > std::numeric_limits<std::size_t>::max() - size) {
-        return false;
-    }
-
-    const std::size_t element = start + size - 1;
-    const std::size_t mapIndex = element / target::kMatricesPerDequeBlock;
-    const std::size_t mapSize = (mapEndAddress - mapBeginAddress) / sizeof(void*);
-    if (mapIndex >= mapSize)
-        return false;
-    const auto* block = readObjectField<const std::byte*>(
-            mapBegin, static_cast<std::ptrdiff_t>(mapIndex * sizeof(void*)));
-    if (block == nullptr)
-        return false;
-    const auto* matrix = reinterpret_cast<const float*>(
-            block + (element % target::kMatricesPerDequeBlock) * target::kMatrixBytes);
-    std::memcpy(output.data(), matrix, target::kMatrixBytes);
-    for (const float value : output) {
-        if (!std::isfinite(value) || std::fabs(value) >= 1.0e8F)
-            return false;
-    }
-    return true;
 }
 
 bool validClientLevel(const void* level) {
@@ -250,31 +207,16 @@ extern "C" void dobby_capture_entity_hitbox(
                 presentation, std::memory_order_acq_rel) != presentation) {
         captureClientServerTick(level);
     }
-    if (!runtimeState().entityHitboxes() || actorGetAabb == nullptr ||
-        contextGetCameraPosition == nullptr)
+
+    CameraFrame frame{};
+    if (!captureRenderCameraFrame(renderContext, frame))
+        return;
+    submitOverlayCamera(level, frame);
+    if (!runtimeState().entityHitboxes() || actorGetAabb == nullptr)
         return;
 
     const auto* bounds = actorGetAabb(actor);
-    const void* screenContext = readObjectField<const void*>(
-            renderContext, target::kRenderContextScreenContextOffset);
-    if (bounds == nullptr || screenContext == nullptr)
-        return;
-    const void* camera = readObjectField<const void*>(
-            screenContext, target::kScreenContextCameraOffset);
-    if (camera == nullptr)
-        return;
-
-    CameraFrame frame{};
-    const Vec3f* cameraPosition = contextGetCameraPosition(renderContext);
-    if (cameraPosition == nullptr)
-        return;
-    frame.position = *cameraPosition;
-    const bool viewRead = readMatrixStackTop(camera, frame.view);
-    const bool projectionRead = readMatrixStackTop(
-            static_cast<const std::byte*>(camera) +
-                    target::kCameraProjectionStackOffset,
-            frame.projection);
-    if (!viewRead || !projectionRead)
+    if (bounds == nullptr)
         return;
     const bool localPlayer = validClientLevel(level) &&
             actor == levelGetPrimaryLocalPlayer(level);
@@ -372,9 +314,6 @@ void installEntityHitboxHook() {
             image.base + target::kLevelForEachPlayerOffset;
     const auto primaryLocalPlayerAddress =
             image.base + target::kLevelGetPrimaryLocalPlayerOffset;
-    const auto projectionGetterAddress = image.base + target::kProjectionMatrixGetterOffset;
-    const auto viewGetterAddress = image.base + target::kViewMatrixGetterOffset;
-    const auto cameraPositionGetterAddress = image.base + target::kCameraPositionGetterOffset;
     const bool valid = image.base != 0 &&
             addressIsExecutable(image, renderAddress) &&
             addressIsExecutable(image, getAabbAddress) &&
@@ -382,9 +321,6 @@ void installEntityHitboxHook() {
             addressIsExecutable(image, runtimeActorListAddress) &&
             addressIsExecutable(image, forEachPlayerAddress) &&
             addressIsExecutable(image, primaryLocalPlayerAddress) &&
-            addressIsExecutable(image, projectionGetterAddress) &&
-            addressIsExecutable(image, viewGetterAddress) &&
-            addressIsExecutable(image, cameraPositionGetterAddress) &&
             matchesSignature(reinterpret_cast<const void*>(renderAddress),
                              target::kActorRenderSignature) &&
             matchesSignature(reinterpret_cast<const void*>(getAabbAddress),
@@ -397,12 +333,7 @@ void installEntityHitboxHook() {
                              target::kLevelForEachPlayerSignature) &&
             matchesSignature(reinterpret_cast<const void*>(primaryLocalPlayerAddress),
                              target::kLevelGetPrimaryLocalPlayerSignature) &&
-            matchesSignature(reinterpret_cast<const void*>(projectionGetterAddress),
-                             target::kProjectionMatrixGetterSignature) &&
-            matchesSignature(reinterpret_cast<const void*>(viewGetterAddress),
-                             target::kViewMatrixGetterSignature) &&
-            matchesSignature(reinterpret_cast<const void*>(cameraPositionGetterAddress),
-                             target::kCameraPositionGetterSignature);
+            configureRenderCameraCapture(image);
     if (!valid) {
         runtimeState().setEntityHitboxesAvailable(false);
         logLine("ERROR: entity overlay unavailable; Bedrock render layout mismatch");
@@ -431,8 +362,6 @@ void installEntityHitboxHook() {
             primaryLocalPlayerAddress);
     expectedClientLevelVtable = image.base + target::kClientLevelVtableOffset;
     minecraftImage = image;
-    contextGetCameraPosition = reinterpret_cast<ContextGetCameraPositionFn>(
-            cameraPositionGetterAddress);
     dobby_actor_render_continue = reinterpret_cast<void*>(renderAddress + replacement.size());
     auto* entry = reinterpret_cast<void*>(renderAddress);
     if (mcpelauncher_patch(entry, replacement.data(), replacement.size()) == nullptr ||
@@ -443,7 +372,6 @@ void installEntityHitboxHook() {
         levelGetPrimaryLocalPlayer = nullptr;
         expectedClientLevelVtable = 0;
         minecraftImage = {};
-        contextGetCameraPosition = nullptr;
         dobby_actor_render_continue = nullptr;
         runtimeState().setEntityHitboxesAvailable(false);
         logLine("ERROR: entity overlay unavailable; actor render hook rejected");

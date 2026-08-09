@@ -43,6 +43,8 @@ DeveloperPreferences parseDeveloperPreferences(
             parsed.autoPopup = parseBoolean(value, fallback.autoPopup);
         else if (key == "entity_hitboxes")
             parsed.entityHitboxes = parseBoolean(value, fallback.entityHitboxes);
+        else if (key == "chest_esp")
+            parsed.chestEsp = parseBoolean(value, fallback.chestEsp);
         else if (key == "network_metrics")
             parsed.networkMetricsOverlay = parseBoolean(
                     value, fallback.networkMetricsOverlay);
@@ -55,6 +57,7 @@ std::string serializeDeveloperPreferences(const DeveloperPreferences& preference
     return std::string("version=") + std::string(kPreferencesVersion) +
             "\nautomatic_popup=" + (preferences.autoPopup ? "true" : "false") +
             "\nentity_hitboxes=" + (preferences.entityHitboxes ? "true" : "false") +
+            "\nchest_esp=" + (preferences.chestEsp ? "true" : "false") +
             "\nnetwork_metrics=" +
             (preferences.networkMetricsOverlay ? "true" : "false") + "\n";
 }

@@ -18,6 +18,7 @@ set(DOBBY_COMMON_SOURCES
     src/metrics/network_metrics.cpp
     src/platform/files.cpp
     src/platform/preferences_store.cpp
+    src/ui/chest_esp.cpp
     src/ui/entity_hitbox_overlay.cpp
     src/ui/network_metrics_overlay.cpp
     src/ui/window_policy.cpp)
@@ -26,11 +27,13 @@ if(ANDROID)
     add_library(dobby SHARED
         src/dobby.cpp
         ${DOBBY_COMMON_SOURCES}
+        src/hooks/chest_esp_hook.cpp
         src/hooks/chunk_metrics_hook.cpp
         src/hooks/entity_hitbox_hook.cpp
         src/hooks/minecraft_image.cpp
         src/hooks/network_metrics_hook.cpp
         src/hooks/packet_hooks.cpp
+        src/hooks/render_camera.cpp
         src/platform/launcher.cpp
         src/platform/log.cpp
         src/ui/developer_ui.cpp)

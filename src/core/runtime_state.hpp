@@ -41,6 +41,10 @@ public:
     void setEntityHitboxes(bool enabled);
     bool entityHitboxesAvailable() const;
     void setEntityHitboxesAvailable(bool available);
+    bool chestEsp() const;
+    bool toggleChestEsp();
+    bool chestEspAvailable() const;
+    void setChestEspAvailable(bool available);
     bool networkMetricsOverlay() const;
     bool toggleNetworkMetricsOverlay();
     DeveloperPreferences developerPreferences() const;
@@ -56,6 +60,8 @@ private:
     std::atomic_bool verbose_{false};
     std::atomic_bool entityHitboxes_{true};
     std::atomic_bool entityHitboxesAvailable_{false};
+    std::atomic_bool chestEsp_{true};
+    std::atomic_bool chestEspAvailable_{false};
     std::atomic_bool networkMetricsOverlay_{true};
     std::atomic_size_t totalViolations_{0};
 };
