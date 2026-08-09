@@ -5,6 +5,7 @@
 #include "hooks/packet_hooks.hpp"
 #include "hooks/entity_hitbox_hook.hpp"
 #include "hooks/network_metrics_hook.hpp"
+#include "hooks/overlay_camera_hook.hpp"
 #include "platform/log.hpp"
 
 #include <atomic>
@@ -35,6 +36,7 @@ extern "C" [[gnu::visibility("default")]] void mod_init() {
     dobby::installNetworkMetricsHook();
     dobby::installChunkMetricsHooks();
     dobby::installEntityHitboxHook();
+    dobby::installOverlayCameraHook();
     dobby::installChestEspHook();
     dobby::registerDeveloperUi();
 #endif

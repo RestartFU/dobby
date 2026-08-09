@@ -5,9 +5,13 @@
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"
 #include "hooks/minecraft_image.hpp"
+#include "hooks/ore_esp_scanner.hpp"
+#include "hooks/overlay_camera_hook.hpp"
+#include "metrics/network_metrics.hpp"
 #include "platform/launcher.hpp"
 #include "platform/log.hpp"
 #include "ui/chest_esp.hpp"
+#include "ui/ore_esp.hpp"
 
 #include <algorithm>
 #include <array>
@@ -296,6 +300,7 @@ void untrackLoadedChunk(ChunkIdentity identity) {
                 pendingChests.end());
     }
     removeClientChunkChests(identity.level, identity.position);
+    removeClientChunkOres(identity.level, identity.position);
 }
 
 void unregisterChestObject(const void* chest) {
@@ -328,11 +333,25 @@ void chestDeletingDestructorDetour(void* chest) {
 void chunkLoadedDetour(void* coordinator, void* source, void* chunk) {
     if (originalChunkLoaded != nullptr)
         originalChunkLoaded(coordinator, source, chunk);
+    const bool metricsEnabled = runtimeState().networkMetricsOverlay();
+    const bool chestEnabled = runtimeState().chestEsp();
+    const bool oreEnabled = runtimeState().oreEsp();
+    if (!metricsEnabled && !chestEnabled && !oreEnabled)
+        return;
     ChunkIdentity identity{};
-    if (readChunkIdentity(chunk, identity))
-        trackLoadedChunk(identity);
-    else
+    if (readChunkIdentity(chunk, identity)) {
+        if (metricsEnabled) {
+            recordClientChunkLoaded(
+                    identity.level, identity.position.x, identity.position.z);
+        }
+        rememberOverlayLevelIdentity(identity.level);
+        if (chestEnabled)
+            trackLoadedChunk(identity);
+        if (oreEnabled)
+            scanClientChunkOres(chunk, identity.level, identity.position);
+    } else {
         logLayoutFailure();
+    }
 }
 
 void subChunkLoadedDetour(
@@ -343,22 +362,52 @@ void subChunkLoadedDetour(
                 coordinator, source, chunk, absoluteSubChunk,
                 visibilityChanged);
     }
+    const bool metricsEnabled = runtimeState().networkMetricsOverlay();
+    const bool chestEnabled = runtimeState().chestEsp();
+    const bool oreEnabled = runtimeState().oreEsp();
+    if (!metricsEnabled && !chestEnabled && !oreEnabled)
+        return;
     ChunkIdentity identity{};
-    if (readChunkIdentity(chunk, identity))
-        trackLoadedChunk(identity);
-    else
+    if (readChunkIdentity(chunk, identity)) {
+        if (metricsEnabled) {
+            recordClientChunkLoaded(
+                    identity.level, identity.position.x, identity.position.z);
+        }
+        rememberOverlayLevelIdentity(identity.level);
+        if (chestEnabled)
+            trackLoadedChunk(identity);
+        if (oreEnabled) {
+            scanClientSubChunkOres(
+                    chunk, identity.level, identity.position,
+                    absoluteSubChunk);
+        }
+    } else {
         logLayoutFailure();
+    }
 }
 
 void chunkUnloadedDetour(void* coordinator, void* chunk) {
+    const bool metricsEnabled = runtimeState().networkMetricsOverlay();
+    const bool espEnabled = runtimeState().anyEspEnabled();
+    if (!metricsEnabled && !espEnabled) {
+        if (originalChunkUnloaded != nullptr)
+            originalChunkUnloaded(coordinator, chunk);
+        return;
+    }
     ChunkIdentity identity{};
     const bool valid = readChunkIdentity(chunk, identity);
     if (originalChunkUnloaded != nullptr)
         originalChunkUnloaded(coordinator, chunk);
-    if (valid)
-        untrackLoadedChunk(identity);
-    else
+    if (valid) {
+        if (metricsEnabled) {
+            recordClientChunkUnloaded(
+                    identity.level, identity.position.x, identity.position.z);
+        }
+        if (espEnabled)
+            untrackLoadedChunk(identity);
+    } else {
         logLayoutFailure();
+    }
 }
 
 template <std::size_t SignatureSize>
@@ -586,6 +635,8 @@ bool installLifecycleHooks(const MinecraftImage& image) {
 } // namespace
 
 void captureConstructedChestPosition(const void* position) {
+    if (!runtimeState().chestEsp())
+        return;
     BlockPosition observed{};
     if (!readBlockPosition(position, observed)) {
         logLayoutFailure();
@@ -599,9 +650,14 @@ void installChestEspHook() {
         return;
     const MinecraftImage image = findMinecraftImage();
     minecraftImage = image;
+    const bool oreScannerReady = initializeOreEspScanner(image);
     const bool ready = image.base != 0 && installLifecycleHooks(image);
-    if (!ready)
+    if (!ready) {
         minecraftImage = {};
+        runtimeState().setOreEspAvailable(false);
+    } else {
+        runtimeState().setOreEspAvailable(oreScannerReady);
+    }
     installed.store(ready, std::memory_order_release);
     runtimeState().setChestEspAvailable(ready);
     logLine(ready

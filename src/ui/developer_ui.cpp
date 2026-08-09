@@ -9,6 +9,7 @@
 #include "diagnostics/report_builder.hpp"
 #include "hooks/chest_esp_hook.hpp"
 #include "hooks/entity_hitbox_hook.hpp"
+#include "hooks/ore_esp_scanner.hpp"
 #include "network/packet_names.hpp"
 #include "platform/files.hpp"
 #include "platform/launcher.hpp"
@@ -28,6 +29,7 @@ bool menuUnselected(void*) { return false; }
 bool autoPopupSelected(void*) { return runtimeState().autoPopup(); }
 bool entityHitboxesSelected(void*) { return runtimeState().entityHitboxes(); }
 bool chestEspSelected(void*) { return runtimeState().chestEsp(); }
+bool oreEspSelected(void*) { return runtimeState().oreEsp(); }
 bool networkMetricsSelected(void*) { return runtimeState().networkMetricsOverlay(); }
 
 void windowClosed(void*) { verboseLine("developer window closed"); }
@@ -96,6 +98,16 @@ void toggleChestEsp(void*) {
     const bool enabled = runtimeState().toggleChestEsp();
     persistDeveloperPreferences();
     logLine(enabled ? "UI: chest ESP enabled" : "UI: chest ESP disabled");
+}
+
+void toggleOreEsp(void*) {
+    if (!runtimeState().oreEspAvailable()) {
+        logLine("ERROR: ore ESP is unavailable");
+        return;
+    }
+    const bool enabled = runtimeState().toggleOreEsp();
+    persistDeveloperPreferences();
+    logLine(enabled ? "UI: ore ESP enabled" : "UI: ore ESP disabled");
 }
 
 void toggleNetworkMetrics(void*) {
@@ -181,6 +193,8 @@ void registerDeveloperUi() {
     runtimeState().setEntityHitboxesAvailable(hitboxesReady);
     const bool chestEspReady = chestEspHookInstalled() && overlayReady;
     runtimeState().setChestEspAvailable(chestEspReady);
+    const bool oreEspReady = oreEspScannerReady() && overlayReady;
+    runtimeState().setOreEspAvailable(oreEspReady);
     if (hitboxesReady)
         logLine(runtimeState().entityHitboxes()
                         ? "entity hitboxes enabled"
@@ -189,6 +203,10 @@ void registerDeveloperUi() {
         logLine(runtimeState().chestEsp()
                         ? "chest ESP enabled"
                         : "chest ESP disabled by saved preference");
+    if (oreEspReady)
+        logLine(runtimeState().oreEsp()
+                        ? "ore ESP enabled"
+                        : "ore ESP disabled by saved preference");
     logLine(launcherWindowAvailable() ? "UI: launcher window API ready"
                                       : "ERROR: launcher window API unavailable");
     logLine(launcherClipboardAvailable() ? "UI: native clipboard ready"
@@ -198,11 +216,13 @@ void registerDeveloperUi() {
         return;
     }
 
-    static std::array<LauncherMenuEntry, 4> subentries{
+    static std::array<LauncherMenuEntry, 5> subentries{
             LauncherMenuEntry{
                     "Entity hitboxes", nullptr, entityHitboxesSelected, toggleHitboxes, 0, nullptr},
             LauncherMenuEntry{
                     "Chest ESP", nullptr, chestEspSelected, toggleChestEsp, 0, nullptr},
+            LauncherMenuEntry{
+                    "Ore ESP", nullptr, oreEspSelected, toggleOreEsp, 0, nullptr},
             LauncherMenuEntry{
                     "Network metrics", nullptr, networkMetricsSelected,
                     toggleNetworkMetrics, 0, nullptr},

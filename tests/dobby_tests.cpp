@@ -10,20 +10,24 @@
 #include "network/packet_names.hpp"
 #include "metrics/network_metrics.hpp"
 #include "platform/preferences_store.hpp"
+#include "platform/safe_memory.hpp"
 #include "ui/chest_esp.hpp"
 #include "ui/entity_hitbox_overlay.hpp"
 #include "ui/network_metrics_overlay.hpp"
+#include "ui/ore_esp.hpp"
 #include "ui/window_policy.hpp"
 
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
 #include <filesystem>
+#include <limits>
 #include <string>
 
 namespace {
@@ -185,11 +189,30 @@ void testEntityHitboxState() {
     const bool chestInitiallyVisible = state.chestEsp();
     require(state.toggleChestEsp() != chestInitiallyVisible);
     require(state.toggleChestEsp() == chestInitiallyVisible);
+    const bool oreInitiallyVisible = state.oreEsp();
+    if (state.chestEsp())
+        static_cast<void>(state.toggleChestEsp());
+    if (state.oreEsp())
+        static_cast<void>(state.toggleOreEsp());
+    require(!state.entityHitboxes());
+    require(!state.chestEsp());
+    require(!state.oreEsp());
+    require(!state.anyEspEnabled());
+    state.setEntityHitboxes(true);
+    require(state.anyEspEnabled());
+    state.setEntityHitboxes(false);
+    if (chestInitiallyVisible)
+        static_cast<void>(state.toggleChestEsp());
+    if (oreInitiallyVisible)
+        static_cast<void>(state.toggleOreEsp());
+    require(state.anyEspEnabled() ==
+            (chestInitiallyVisible || oreInitiallyVisible));
     const bool metricsInitiallyVisible = state.networkMetricsOverlay();
     assert(state.toggleNetworkMetricsOverlay() != metricsInitiallyVisible);
     assert(state.toggleNetworkMetricsOverlay() == metricsInitiallyVisible);
     static_cast<void>(metricsInitiallyVisible);
     static_cast<void>(chestInitiallyVisible);
+    static_cast<void>(oreInitiallyVisible);
 }
 
 void testEntityProjection() {
@@ -203,6 +226,13 @@ void testEntityProjection() {
     static_assert(dobby::target::kCameraPositionGetterOffset == 0x0a5d8b70);
     static_assert(dobby::target::kActorLevelOffset == 0x1d0);
     static_assert(dobby::target::kActorGetLevelOffset == 0x0eca7920);
+    static_assert(
+            dobby::target::kLevelRenderFrameOffset == 0x0ae0aba8);
+    static_assert(
+            dobby::target::kLevelRenderFrameVtableSlotOffset ==
+            0x11fbe330);
+    static_assert(
+            dobby::target::kLevelRenderFrameSignature[0] == 0xff);
     static_assert(dobby::target::kLevelGetRuntimeActorListOffset == 0x0f226d10);
     static_assert(dobby::target::kLevelGetRuntimeActorListVtableSlot == 326);
     static_assert(dobby::target::kLevelForEachPlayerOffset == 0x0f225e4c);
@@ -211,9 +241,15 @@ void testEntityProjection() {
     static_assert(dobby::target::kLevelGetPrimaryLocalPlayerVtableSlot == 77);
     static_assert(dobby::target::kClientLevelVtableOffset == 0x11ed28b0);
     require(dobby::entityHitboxObservedForPresentation(1, 0));
-    require(dobby::entityHitboxObservedForPresentation(25, 24));
-    require(!dobby::entityHitboxObservedForPresentation(2, 0));
+    require(dobby::entityHitboxObservedForPresentation(8, 0));
+    require(!dobby::entityHitboxObservedForPresentation(9, 0));
     require(!dobby::entityHitboxObservedForPresentation(24, 25));
+    require(dobby::shouldUseCompactEspMarker(8.0F, 8.0F));
+    require(dobby::shouldUseCompactEspMarker(3.0F, 7.0F));
+    require(!dobby::shouldUseCompactEspMarker(9.0F, 3.0F));
+    require(!dobby::shouldUseCompactEspMarker(-1.0F, 3.0F));
+    require(!dobby::shouldUseCompactEspMarker(
+            std::numeric_limits<float>::quiet_NaN(), 3.0F));
     const dobby::CameraFrame camera{
             {0.0F, 0.0F, 0.0F},
             {{1.0F, 0.0F, 0.0F, 0.0F,
@@ -225,6 +261,38 @@ void testEntityProjection() {
               0.0F, 0.0F, -1.0F, -1.0F,
               0.0F, 0.0F, -0.2F, 0.0F}},
     };
+    const std::array observations{
+            dobby::EntityHitboxObservation{
+                    reinterpret_cast<const void*>(0x2000),
+                    {{-0.5F, 0.0F, -5.5F}, {0.5F, 1.0F, -4.5F}}},
+            dobby::EntityHitboxObservation{
+                    reinterpret_cast<const void*>(0x3000),
+                    {{0.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 1.0F}}},
+    };
+    const auto submitted = dobby::submitEntityHitboxFrame(
+            reinterpret_cast<const void*>(0x1000), camera, observations);
+    require(submitted.accepted == 1);
+    require(submitted.invalid == 1);
+    const void* cameraLevel = nullptr;
+    dobby::CameraFrame retainedCamera{};
+    std::uint64_t missedFrames = 0;
+    require(dobby::currentOverlayCamera(
+            8, cameraLevel, retainedCamera, &missedFrames));
+    require(cameraLevel == reinterpret_cast<const void*>(0x1000));
+    require(missedFrames == 8);
+    require(!dobby::currentOverlayCamera(
+            9, cameraLevel, retainedCamera, &missedFrames));
+    require(missedFrames == 9);
+    auto refreshedCamera = camera;
+    refreshedCamera.position = {4.0F, 5.0F, 6.0F};
+    require(dobby::submitOverlayCameraFrame(
+            reinterpret_cast<const void*>(0x1000), refreshedCamera));
+    require(dobby::currentOverlayCamera(
+            0, cameraLevel, retainedCamera, &missedFrames));
+    require(retainedCamera.position.x == 4.0F);
+    require(retainedCamera.position.y == 5.0F);
+    require(retainedCamera.position.z == 6.0F);
+    require(!dobby::submitOverlayCameraFrame(nullptr, refreshedCamera));
     dobby::ScreenPoint center{};
     const bool centerProjected = dobby::projectWorldPoint(
             camera, {0.0F, 0.0F, -5.0F}, 1920.0F, 1080.0F, center);
@@ -241,6 +309,22 @@ void testEntityProjection() {
     const bool behindProjected = dobby::projectWorldPoint(
             camera, {0.0F, 0.0F, 1.0F}, 1920.0F, 1080.0F, behind);
     assert(!behindProjected);
+    dobby::ScreenPoint clippedFirst{};
+    dobby::ScreenPoint clippedSecond{};
+    bool nearPlaneClipped = false;
+    const bool crossingProjected = dobby::projectWorldSegment(
+            camera, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F, -5.0F},
+            1920.0F, 1080.0F, clippedFirst, clippedSecond,
+            nearPlaneClipped);
+    require(crossingProjected);
+    require(nearPlaneClipped);
+    require(std::isfinite(clippedFirst.x));
+    require(std::isfinite(clippedFirst.y));
+    bool rejectedSegmentClipped = false;
+    require(!dobby::projectWorldSegment(
+            camera, {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F, 2.0F},
+            1920.0F, 1080.0F, clippedFirst, clippedSecond,
+            rejectedSegmentClipped));
     const float projection[16]{
             0.5625F, 0.0F, 0.0F, 0.0F,
             0.0F, 1.0F, 0.0F, 0.0F,
@@ -339,13 +423,17 @@ void testNetworkMetrics() {
         metrics.recordServerTick(100 + elapsed / 50, 1000 + elapsed);
     metrics.recordChunk(1800);
     metrics.recordChunk(2400);
+    metrics.recordChunkLoaded(0x1000, -2, 7);
+    metrics.recordChunkLoaded(0x1000, -2, 7);
+    metrics.recordChunkLoaded(0x1000, -1, 7);
+    metrics.recordChunkUnloaded(0x1000, 99, 99);
     dobby::setOutstandingChunkMetricsAvailable(true);
     metrics.recordSubChunkRequest(12);
     metrics.recordSubChunkResponse(5);
     snapshot = metrics.snapshot(2500);
     assert(snapshot.observedTicksPerSecond);
     assert(*snapshot.observedTicksPerSecond == 20.0);
-    assert(snapshot.chunksReceived == 2);
+    assert(snapshot.loadedChunks == 2);
     assert(snapshot.chunksPerSecond == 2);
     assert(snapshot.outstandingSubChunkRequests == 7);
 
@@ -355,6 +443,8 @@ void testNetworkMetrics() {
     assert(text.observedTps == "TPS~ 20.0");
     assert(text.chunks == "CHUNKS 2 (2/S)");
     assert(text.pending == "PENDING 7");
+    metrics.recordChunkUnloaded(0x1000, -2, 7);
+    assert(metrics.snapshot(2500).loadedChunks == 1);
     const auto geometry = dobby::buildNetworkMetricsGeometry(
             snapshot, 1280.0F, 720.0F);
     assert(!geometry.shadowVertices.empty());
@@ -371,6 +461,7 @@ void testNetworkMetrics() {
     assert(metrics.retainedTickSamples() <= 64);
 
     metrics.reset();
+    assert(metrics.snapshot(5001).loadedChunks == 0);
     metrics.recordPing(-1, -1, 9000);
     assert(!metrics.snapshot(9000).connected);
     const auto hidden = dobby::formatNetworkMetrics(metrics.snapshot(9000));
@@ -421,6 +512,7 @@ void testDeveloperPreferences() {
             .autoPopup = true,
             .entityHitboxes = true,
             .chestEsp = false,
+            .oreEsp = true,
             .networkMetricsOverlay = true,
     };
 
@@ -429,11 +521,13 @@ void testDeveloperPreferences() {
             "automatic_popup=off\n"
             "entity_hitboxes=false\n"
             "chest_esp=true\n"
+            "ore_esp=false\n"
             "network_metrics=0\n",
             defaults);
     require(!parsed.autoPopup);
     require(!parsed.entityHitboxes);
     require(parsed.chestEsp);
+    require(!parsed.oreEsp);
     require(!parsed.networkMetricsOverlay);
 
     const auto malformed = dobby::parseDeveloperPreferences(
@@ -441,12 +535,14 @@ void testDeveloperPreferences() {
             "automatic_popup=invalid\n"
             "entity_hitboxes=maybe\n"
             "chest_esp=unknown\n"
+            "ore_esp=unknown\n"
             "network_metrics=unknown\n"
             "future_setting=false\n",
             defaults);
     require(malformed.autoPopup);
     require(malformed.entityHitboxes);
     require(!malformed.chestEsp);
+    require(malformed.oreEsp);
     require(malformed.networkMetricsOverlay);
 
     const auto unsupported = dobby::parseDeveloperPreferences(
@@ -464,6 +560,83 @@ void testDeveloperPreferences() {
     require(dobby::saveDeveloperPreferencesFile(path.string(), parsed));
     require(dobby::loadDeveloperPreferencesFile(path.string(), defaults) == parsed);
     std::filesystem::remove(path, error);
+}
+
+void testOreEspRegistry() {
+    require(dobby::target::kBlockTypeHashedNameOffset +
+                    dobby::target::kHashedStringValueOffset ==
+            0xd0);
+    require(dobby::target::kRenderContextCameraStateOffset == 0xa8);
+    require(dobby::target::kRenderCameraStatePositionOffset == 0x34);
+    const std::array<std::uint8_t, 9> expectedPaletteWidths{
+            0, 1, 2, 3, 4, 5, 6, 8, 16};
+    for (std::size_t index = 0; index < expectedPaletteWidths.size(); ++index) {
+        require(dobby::target::kSubChunkStorageDispatches[index].bitsPerElement ==
+                expectedPaletteWidths[index]);
+    }
+
+    const std::array<std::byte, 4> readable{
+            std::byte{0x10}, std::byte{0x20},
+            std::byte{0x30}, std::byte{0x40}};
+    std::array<std::byte, 4> copied{};
+    require(dobby::copyReadableMemory(readable.data(), copied));
+    require(copied == readable);
+
+    require(dobby::validBlockResourceName("minecraft:diamond_ore"));
+    require(dobby::validBlockResourceName("economy:custom/block"));
+    require(!dobby::validBlockResourceName("diamond_ore"));
+    require(!dobby::validBlockResourceName("Economy:custom_block"));
+    require(dobby::classifyOreBlockName("minecraft:diamond_ore") ==
+            dobby::OreKind::diamond);
+    require(dobby::classifyOreBlockName(
+                    "minecraft:deepslate_redstone_ore") ==
+            dobby::OreKind::redstone);
+    require(dobby::classifyOreBlockName("minecraft:quartz_ore") ==
+            dobby::OreKind::quartz);
+    require(dobby::classifyOreBlockName("minecraft:ancient_debris") ==
+            dobby::OreKind::ancientDebris);
+    require(!dobby::classifyOreBlockName("minecraft:stone"));
+
+    require(dobby::packedPaletteIndex({}, 0, 4'095, 1) == 0);
+    require(!dobby::packedPaletteIndex({}, 0, 0, 2));
+    const std::array<std::uint32_t, 1> twoBitWords{0b11'10'01'00U};
+    require(dobby::packedPaletteIndex(twoBitWords, 2, 0, 4) == 0);
+    require(dobby::packedPaletteIndex(twoBitWords, 2, 1, 4) == 1);
+    require(dobby::packedPaletteIndex(twoBitWords, 2, 2, 4) == 2);
+    require(dobby::packedPaletteIndex(twoBitWords, 2, 3, 4) == 3);
+    require(!dobby::packedPaletteIndex(twoBitWords, 2, 4'096, 4));
+    const std::array<std::uint32_t, 1> invalidPaletteWord{3U};
+    require(!dobby::packedPaletteIndex(invalidPaletteWord, 2, 0, 3));
+    const std::array<std::uint32_t, 1> threeBitWords{0b101'011U};
+    require(dobby::packedPaletteIndex(threeBitWords, 3, 0, 8) == 3);
+    require(dobby::packedPaletteIndex(threeBitWords, 3, 1, 8) == 5);
+    require(!dobby::packedPaletteIndex(threeBitWords, 7, 0, 8));
+
+    dobby::ChunkOreRegistry registry(2, 3);
+    const auto* level = reinterpret_cast<const void*>(0x1000);
+    const dobby::ChunkPosition chunk{2, -3};
+    const std::vector<dobby::OreBlock> ores{
+            {{32, 5, -48}, dobby::OreKind::diamond},
+            {{33, 6, -47}, dobby::OreKind::iron},
+    };
+    require(registry.replaceSubChunk(level, chunk, 0, ores) ==
+            dobby::ChunkOreUpdateResult::accepted);
+    require(registry.size() == 2);
+    require(registry.sizeForLevel(level) == 2);
+    const auto nearby = registry.snapshotNear(
+            level, {32.0F, 5.0F, -48.0F}, 8.0F, 8);
+    require(nearby.size() == 2);
+    const auto limited = registry.snapshotNear(
+            level, {32.0F, 5.0F, -48.0F}, 8.0F, 1);
+    require(limited.size() == 1);
+
+    const std::vector<dobby::OreBlock> invalid{
+            {{0, 5, 0}, dobby::OreKind::gold},
+    };
+    require(registry.replaceSubChunk(level, chunk, 0, invalid) ==
+            dobby::ChunkOreUpdateResult::invalidInput);
+    registry.removeChunk(level, chunk);
+    require(registry.size() == 0);
 }
 
 void testDobbyWindowPolicy() {
@@ -491,6 +664,7 @@ int main() {
     testNetworkMetrics();
     testConfigurationAndPacketCatalog();
     testDeveloperPreferences();
+    testOreEspRegistry();
     testDobbyWindowPolicy();
     std::cout << "Dobby tests passed\n";
 }

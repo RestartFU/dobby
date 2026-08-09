@@ -9,6 +9,7 @@ struct DeveloperPreferences {
     bool autoPopup{true};
     bool entityHitboxes{true};
     bool chestEsp{true};
+    bool oreEsp{true};
     bool networkMetricsOverlay{true};
 
     bool operator==(const DeveloperPreferences&) const = default;

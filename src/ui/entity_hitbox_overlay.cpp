@@ -1,5 +1,6 @@
 #include "ui/entity_hitbox_overlay.hpp"
 #include "ui/chest_esp.hpp"
+#include "ui/ore_esp.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,7 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -16,6 +16,7 @@ namespace dobby {
 namespace {
 
 constexpr float kNearPlane = 0.01F;
+constexpr float kCompactMarkerMaximumSize = 8.0F;
 constexpr std::size_t kMaximumBoxesPerFrame = 512;
 
 Vec3f subtract(const Vec3f& left, const Vec3f& right) {
@@ -61,14 +62,72 @@ std::array<float, 4> transform(
     }};
 }
 
+std::array<float, 4> worldToClip(
+        const CameraFrame& camera, const Vec3f& world) {
+    const Vec3f relative = subtract(world, camera.position);
+    const auto eye = transform(
+            camera.view, {{relative.x, relative.y, relative.z, 1.0F}});
+    return transform(camera.projection, eye);
+}
+
+bool finiteClip(const std::array<float, 4>& clip) {
+    return std::all_of(clip.begin(), clip.end(), [](float value) {
+        return std::isfinite(value);
+    });
+}
+
+bool clipToScreen(
+        const std::array<float, 4>& clip, float width, float height,
+        ScreenPoint& output) {
+    if (!finiteClip(clip) || clip[3] < kNearPlane)
+        return false;
+    const float normalizedX = clip[0] / clip[3];
+    const float normalizedY = clip[1] / clip[3];
+    if (!std::isfinite(normalizedX) || !std::isfinite(normalizedY))
+        return false;
+    output.x = (normalizedX + 1.0F) * width * 0.5F;
+    output.y = (1.0F - normalizedY) * height * 0.5F;
+    return std::isfinite(output.x) && std::isfinite(output.y);
+}
+
+bool projectClipSegment(
+        std::array<float, 4> firstClip, std::array<float, 4> secondClip,
+        float width, float height, ScreenPoint& firstOutput,
+        ScreenPoint& secondOutput, bool& nearPlaneClipped) {
+    nearPlaneClipped = false;
+    if (!finiteClip(firstClip) || !finiteClip(secondClip) ||
+        (firstClip[3] <= kNearPlane && secondClip[3] <= kNearPlane)) {
+        return false;
+    }
+    const auto clipEndpoint = [&](std::array<float, 4>& behind,
+                                  const std::array<float, 4>& ahead) {
+        const float denominator = ahead[3] - behind[3];
+        if (!std::isfinite(denominator) || denominator <= 0.0F)
+            return false;
+        const float amount = (kNearPlane - behind[3]) / denominator;
+        if (!std::isfinite(amount) || amount < 0.0F || amount > 1.0F)
+            return false;
+        for (std::size_t index = 0; index < behind.size(); ++index)
+            behind[index] += (ahead[index] - behind[index]) * amount;
+        behind[3] = kNearPlane;
+        nearPlaneClipped = true;
+        return true;
+    };
+    if (firstClip[3] <= kNearPlane && !clipEndpoint(firstClip, secondClip))
+        return false;
+    if (secondClip[3] <= kNearPlane && !clipEndpoint(secondClip, firstClip))
+        return false;
+    return clipToScreen(firstClip, width, height, firstOutput) &&
+            clipToScreen(secondClip, width, height, secondOutput);
+}
+
 struct CapturedBox {
     EntityAabb bounds;
-    CameraFrame camera;
     std::uint64_t lastSeenFrame{};
 };
 
 std::mutex captureMutex;
-std::unordered_map<std::uintptr_t, CapturedBox> capturedBoxes;
+std::vector<CapturedBox> capturedBoxes;
 std::uintptr_t capturedLevel{};
 CameraFrame latestCamera{};
 std::uintptr_t latestCameraLevel{};
@@ -93,69 +152,89 @@ bool projectWorldPoint(
         return false;
     }
 
-    // Bedrock renders world geometry relative to the camera origin. Apply the
-    // exact view and projection matrices retained by that same camera. This is
-    // the world-to-screen path used by Horion, without reconstructing FOV or
-    // camera axes independently.
-    const Vec3f relative = subtract(world, camera.position);
-    const auto eye = transform(camera.view, {{relative.x, relative.y, relative.z, 1.0F}});
-    const auto clip = transform(camera.projection, eye);
-    if (!std::isfinite(clip[3]) || clip[3] <= kNearPlane)
-        return false;
-    const float normalizedX = clip[0] / clip[3];
-    const float normalizedY = clip[1] / clip[3];
-    if (!std::isfinite(normalizedX) || !std::isfinite(normalizedY))
-        return false;
-
-    output.x = (normalizedX + 1.0F) * width * 0.5F;
-    output.y = (1.0F - normalizedY) * height * 0.5F;
-    return std::isfinite(output.x) && std::isfinite(output.y);
+    return clipToScreen(worldToClip(camera, world), width, height, output);
 }
 
-HitboxSubmissionResult submitEntityHitbox(
-        const void* entityIdentity, const void* levelIdentity,
-        const EntityAabb& bounds, const CameraFrame& camera) {
-    if (entityIdentity == nullptr || levelIdentity == nullptr)
-        return HitboxSubmissionResult::invalidBounds;
-    if (!validBounds(bounds))
-        return HitboxSubmissionResult::invalidBounds;
-    if (!validCamera(camera))
-        return HitboxSubmissionResult::invalidCamera;
+bool projectWorldSegment(
+        const CameraFrame& camera, const Vec3f& firstWorld,
+        const Vec3f& secondWorld, float width, float height,
+        ScreenPoint& firstOutput, ScreenPoint& secondOutput,
+        bool& nearPlaneClipped) {
+    nearPlaneClipped = false;
+    if (!validCamera(camera) || !finite(firstWorld) || !finite(secondWorld) ||
+        !std::isfinite(width) || !std::isfinite(height) || width <= 0.0F ||
+        height <= 0.0F) {
+        return false;
+    }
+
+    return projectClipSegment(
+            worldToClip(camera, firstWorld), worldToClip(camera, secondWorld),
+            width, height, firstOutput, secondOutput, nearPlaneClipped);
+}
+
+bool shouldUseCompactEspMarker(float widthPixels, float heightPixels) {
+    return std::isfinite(widthPixels) && std::isfinite(heightPixels) &&
+            widthPixels >= 0.0F && heightPixels >= 0.0F &&
+            widthPixels <= kCompactMarkerMaximumSize &&
+            heightPixels <= kCompactMarkerMaximumSize;
+}
+
+HitboxFrameSubmission submitEntityHitboxFrame(
+        const void* levelIdentity, const CameraFrame& camera,
+        std::span<const EntityHitboxObservation> observations) {
+    HitboxFrameSubmission result{};
+    if (levelIdentity == nullptr || !validCamera(camera)) {
+        result.invalid = observations.size();
+        return result;
+    }
     std::lock_guard lock(captureMutex);
     const auto level = reinterpret_cast<std::uintptr_t>(levelIdentity);
     if (capturedLevel != level) {
         capturedBoxes.clear();
         capturedLevel = level;
     }
-    const auto entity = reinterpret_cast<std::uintptr_t>(entityIdentity);
-    const auto existing = capturedBoxes.find(entity);
-    if (existing == capturedBoxes.end() &&
-        capturedBoxes.size() >= kMaximumBoxesPerFrame) {
-        return HitboxSubmissionResult::frameCapacityReached;
+    capturedBoxes.clear();
+    capturedBoxes.reserve(kMaximumBoxesPerFrame);
+    const std::uint64_t frame = presentationFrame.load(std::memory_order_relaxed);
+    for (const EntityHitboxObservation& observation : observations) {
+        if (observation.identity == nullptr || !validBounds(observation.bounds)) {
+            ++result.invalid;
+            continue;
+        }
+        if (capturedBoxes.size() >= kMaximumBoxesPerFrame) {
+            ++result.capacityRejected;
+            continue;
+        }
+        capturedBoxes.push_back({observation.bounds, frame});
+        ++result.accepted;
     }
-    capturedBoxes[entity] = {
-            bounds, camera, presentationFrame.load(std::memory_order_relaxed)};
-    return HitboxSubmissionResult::accepted;
+    latestCamera = camera;
+    latestCameraLevel = level;
+    latestCameraFrame = frame;
+    return result;
 }
 
-void submitOverlayCamera(
+bool submitOverlayCameraFrame(
         const void* levelIdentity, const CameraFrame& camera) {
     if (levelIdentity == nullptr || !validCamera(camera))
-        return;
+        return false;
     std::lock_guard lock(captureMutex);
     latestCamera = camera;
     latestCameraLevel = reinterpret_cast<std::uintptr_t>(levelIdentity);
     latestCameraFrame = presentationFrame.load(std::memory_order_relaxed);
+    return true;
 }
 
 bool currentOverlayCamera(
         std::uint64_t currentFrame, const void*& levelIdentity,
-        CameraFrame& camera) {
+        CameraFrame& camera, std::uint64_t* missedFrames) {
     std::lock_guard lock(captureMutex);
-    if (latestCameraLevel == 0 ||
-        !entityHitboxObservedForPresentation(currentFrame, latestCameraFrame)) {
+    if (latestCameraLevel == 0 || currentFrame < latestCameraFrame)
         return false;
-    }
+    if (missedFrames != nullptr)
+        *missedFrames = currentFrame - latestCameraFrame;
+    if (!entityHitboxObservedForPresentation(currentFrame, latestCameraFrame))
+        return false;
     levelIdentity = reinterpret_cast<const void*>(latestCameraLevel);
     camera = latestCamera;
     return true;
@@ -167,7 +246,9 @@ std::uint64_t entityHitboxPresentationFrame() {
 
 bool entityHitboxObservedForPresentation(
         std::uint64_t currentFrame, std::uint64_t lastSeenFrame) {
-    return currentFrame >= lastSeenFrame && currentFrame - lastSeenFrame <= 1;
+    return currentFrame >= lastSeenFrame &&
+            currentFrame - lastSeenFrame <=
+                    kMaximumMissedEntityPresentationFrames;
 }
 
 } // namespace dobby
@@ -189,6 +270,8 @@ bool entityHitboxObservedForPresentation(
 
 namespace dobby {
 namespace {
+
+constexpr std::size_t kMaximumOresPerFrame = 4'096;
 
 struct GlApi {
     PFNGLCREATESHADERPROC createShader{};
@@ -240,6 +323,12 @@ std::atomic_bool presentationSampleLogged{false};
 std::atomic_bool rendererFailureLogged{false};
 std::atomic_bool chestPresentationLogged{false};
 std::atomic_bool chestLevelMismatchLogged{false};
+std::atomic_bool orePresentationLogged{false};
+std::atomic_bool oreLevelMismatchLogged{false};
+std::atomic_bool nearPlaneClipLogged{false};
+std::atomic_bool synchronizedCameraLogged{false};
+std::atomic_bool captureGapActive{false};
+std::atomic_bool cameraExpiredLogged{false};
 std::size_t largestBatchLogged = 0;
 std::size_t batchSamplesLogged = 0;
 
@@ -403,33 +492,73 @@ void drawLines(const float* vertices, std::size_t floatCount,
 }
 
 void drawEntityHitboxes(void*, void* display, void* surface) {
+    const bool espEnabled = runtimeState().anyEspEnabled();
+    const bool metricsEnabled = runtimeState().networkMetricsOverlay();
+    if (!espEnabled && !metricsEnabled)
+        return;
+
     const bool showHitboxes = runtimeState().entityHitboxes();
     const bool showChests = runtimeState().chestEsp();
-    const NetworkMetricsSnapshot metrics = runtimeState().networkMetricsOverlay()
+    const bool showOres = runtimeState().oreEsp();
+    const NetworkMetricsSnapshot metrics = metricsEnabled
             ? currentNetworkMetrics() : NetworkMetricsSnapshot{};
-    std::vector<CapturedBox> boxes;
+    thread_local std::vector<CapturedBox> boxes;
+    boxes.clear();
+    boxes.reserve(kMaximumBoxesPerFrame);
+    std::uintptr_t boxLevel = 0;
     const std::uint64_t currentFrame =
             presentationFrame.fetch_add(1, std::memory_order_acq_rel) + 1;
-    {
+    if (showHitboxes) {
         std::lock_guard lock(captureMutex);
         for (auto entry = capturedBoxes.begin(); entry != capturedBoxes.end();) {
             if (!entityHitboxObservedForPresentation(
-                        currentFrame, entry->second.lastSeenFrame)) {
+                        currentFrame, entry->lastSeenFrame)) {
                 entry = capturedBoxes.erase(entry);
             } else {
-                boxes.push_back(entry->second);
+                boxes.push_back(*entry);
                 ++entry;
             }
         }
+        boxLevel = capturedLevel;
     }
-    if (!showHitboxes)
-        boxes.clear();
-    std::vector<ChestEspObservation> chests;
     const void* cameraLevel = nullptr;
-    CameraFrame chestCamera{};
-    if (showChests && currentOverlayCamera(
-                              currentFrame, cameraLevel, chestCamera)) {
-        chests = snapshotClientKnownChests(cameraLevel, chestCamera);
+    CameraFrame overlayCamera{};
+    std::uint64_t missedCameraFrames = 0;
+    const bool currentCameraAvailable =
+            (showHitboxes || showChests || showOres) && currentOverlayCamera(
+                    currentFrame, cameraLevel, overlayCamera,
+                    &missedCameraFrames);
+    if (currentCameraAvailable && missedCameraFrames > 1 &&
+        !captureGapActive.exchange(true, std::memory_order_acq_rel)) {
+        char message[144]{};
+        std::snprintf(
+                message, sizeof(message),
+                "entity overlay: retaining snapshot across %llu missed "
+                "render-camera frame(s)",
+                static_cast<unsigned long long>(missedCameraFrames - 1));
+        logLine(message);
+    } else if (!currentCameraAvailable &&
+               missedCameraFrames > kMaximumMissedEntityPresentationFrames &&
+               !cameraExpiredLogged.exchange(true, std::memory_order_acq_rel)) {
+        char message[144]{};
+        std::snprintf(
+                message, sizeof(message),
+                "ERROR: entity overlay expired after %llu frame(s) without "
+                "a render-camera callback",
+                static_cast<unsigned long long>(missedCameraFrames - 1));
+        logLine(message);
+    } else if (currentCameraAvailable && missedCameraFrames <= 1 &&
+               captureGapActive.exchange(false, std::memory_order_acq_rel)) {
+        logLine("entity overlay: render-camera capture recovered");
+        cameraExpiredLogged.store(false, std::memory_order_release);
+    }
+    if (!showHitboxes || !currentCameraAvailable ||
+        boxLevel != reinterpret_cast<std::uintptr_t>(cameraLevel)) {
+        boxes.clear();
+    }
+    std::vector<ChestEspObservation> chests;
+    if (showChests && currentCameraAvailable) {
+        chests = snapshotClientKnownChests(cameraLevel, overlayCamera);
         if (!chests.empty() && !chestPresentationLogged.exchange(
                                        true, std::memory_order_acq_rel)) {
             char message[128]{};
@@ -448,6 +577,31 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
                     "camera_level=%zu",
                     clientKnownChestCount(),
                     clientKnownChestCountForLevel(cameraLevel));
+            logLine(message);
+        }
+    }
+    std::vector<OreEspObservation> ores;
+    if (showOres && currentCameraAvailable) {
+        ores = snapshotClientKnownOres(
+                cameraLevel, overlayCamera, kMaximumOresPerFrame);
+        if (!ores.empty() && !orePresentationLogged.exchange(
+                                     true, std::memory_order_acq_rel)) {
+            char message[128]{};
+            std::snprintf(
+                    message, sizeof(message),
+                    "ore ESP presentation: %zu client-known ore(s)",
+                    ores.size());
+            logLine(message);
+        } else if (ores.empty() && clientKnownOreCount() != 0 &&
+                   !oreLevelMismatchLogged.exchange(
+                           true, std::memory_order_acq_rel)) {
+            char message[192]{};
+            std::snprintf(
+                    message, sizeof(message),
+                    "ERROR: ore ESP level mismatch: registry=%zu "
+                    "camera_level=%zu",
+                    clientKnownOreCount(),
+                    clientKnownOreCountForLevel(cameraLevel));
             logLine(message);
         }
     }
@@ -474,7 +628,8 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
         return;
     const NetworkMetricsGeometry metricsGeometry =
             buildNetworkMetricsGeometry(metrics, width, height);
-    if (boxes.empty() && chests.empty() && metricsGeometry.shadowVertices.empty())
+    if (boxes.empty() && chests.empty() && ores.empty() &&
+        metricsGeometry.shadowVertices.empty())
         return;
 
     if (boxes.size() > largestBatchLogged && batchSamplesLogged < 8) {
@@ -501,8 +656,8 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
                     largest->bounds.minimum.x, largest->bounds.minimum.y,
                     largest->bounds.minimum.z, largest->bounds.maximum.x,
                     largest->bounds.maximum.y, largest->bounds.maximum.z,
-                    largest->camera.position.x, largest->camera.position.y,
-                    largest->camera.position.z);
+                    overlayCamera.position.x, overlayCamera.position.y,
+                    overlayCamera.position.z);
         } else {
             std::snprintf(message, sizeof(message),
                           "entity frame sample: actors=%zu", boxes.size());
@@ -515,95 +670,133 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
             {{4, 5}}, {{5, 6}}, {{6, 7}}, {{7, 4}},
             {{0, 4}}, {{1, 5}}, {{2, 6}}, {{3, 7}},
     }};
-    std::vector<float> vertices;
+    thread_local std::vector<float> vertices;
+    vertices.clear();
     vertices.reserve(boxes.size() * edges.size() * 4);
-    std::vector<float> chestVertices;
+    thread_local std::vector<float> chestVertices;
+    chestVertices.clear();
     chestVertices.reserve(chests.size() * edges.size() * 4);
-    std::vector<float> locatorVertices;
-    locatorVertices.reserve(boxes.size() * 24);
+    constexpr std::size_t oreKindCount =
+            static_cast<std::size_t>(OreKind::count);
+    thread_local std::array<std::vector<float>, oreKindCount> oreVertices;
+    for (auto& kindVertices : oreVertices) {
+        kindVertices.clear();
+        kindVertices.reserve(ores.size() * edges.size() * 4 / oreKindCount);
+    }
+    thread_local std::vector<float> locatorVertices;
+    locatorVertices.clear();
+    constexpr std::size_t compactCircleSegments = 12;
+    locatorVertices.reserve(
+            (boxes.size() + chests.size() + ores.size()) *
+            compactCircleSegments * 4);
     const auto appendScreenLine = [&](float x1, float y1, float x2, float y2) {
         locatorVertices.push_back(x1 / width * 2.0F - 1.0F);
         locatorVertices.push_back(1.0F - y1 / height * 2.0F);
         locatorVertices.push_back(x2 / width * 2.0F - 1.0F);
         locatorVertices.push_back(1.0F - y2 / height * 2.0F);
     };
+    const auto appendCompactCircle = [&](float centerX, float centerY) {
+        constexpr float radius = 4.0F;
+        constexpr float twoPi = 6.2831853071795864769F;
+        for (std::size_t segment = 0; segment < compactCircleSegments; ++segment) {
+            const float firstAngle = twoPi * static_cast<float>(segment) /
+                    static_cast<float>(compactCircleSegments);
+            const float secondAngle = twoPi * static_cast<float>(segment + 1) /
+                    static_cast<float>(compactCircleSegments);
+            appendScreenLine(
+                    centerX + std::cos(firstAngle) * radius,
+                    centerY + std::sin(firstAngle) * radius,
+                    centerX + std::cos(secondAngle) * radius,
+                    centerY + std::sin(secondAngle) * radius);
+        }
+    };
     std::size_t projectedCorners = 0;
     std::size_t locatorCount = 0;
+    std::size_t nearPlaneClippedEdges = 0;
     float minimumScreenX = std::numeric_limits<float>::infinity();
     float maximumScreenX = -std::numeric_limits<float>::infinity();
     float minimumScreenY = std::numeric_limits<float>::infinity();
     float maximumScreenY = -std::numeric_limits<float>::infinity();
-    for (const auto& box : boxes) {
-        const auto worldCorners = corners(box.bounds);
+    const auto appendProjectedBox = [&](
+            const EntityAabb& bounds, std::vector<float>& target,
+            bool collectEntitySample) {
+        const auto worldCorners = corners(bounds);
+        std::array<std::array<float, 4>, 8> clipCorners{};
         std::array<ScreenPoint, 8> screenCorners{};
-        std::array<bool, 8> visible{};
         float boxMinimumX = std::numeric_limits<float>::infinity();
         float boxMaximumX = -std::numeric_limits<float>::infinity();
         float boxMinimumY = std::numeric_limits<float>::infinity();
         float boxMaximumY = -std::numeric_limits<float>::infinity();
         for (std::size_t index = 0; index < worldCorners.size(); ++index) {
-            visible[index] = projectWorldPoint(
-                    box.camera, worldCorners[index], width, height, screenCorners[index]);
-            if (visible[index]) {
-                ++projectedCorners;
-                minimumScreenX = std::min(minimumScreenX, screenCorners[index].x);
-                maximumScreenX = std::max(maximumScreenX, screenCorners[index].x);
-                minimumScreenY = std::min(minimumScreenY, screenCorners[index].y);
-                maximumScreenY = std::max(maximumScreenY, screenCorners[index].y);
+            clipCorners[index] = worldToClip(overlayCamera, worldCorners[index]);
+            if (clipToScreen(
+                        clipCorners[index], width, height,
+                        screenCorners[index])) {
+                if (collectEntitySample) {
+                    ++projectedCorners;
+                    minimumScreenX = std::min(
+                            minimumScreenX, screenCorners[index].x);
+                    maximumScreenX = std::max(
+                            maximumScreenX, screenCorners[index].x);
+                    minimumScreenY = std::min(
+                            minimumScreenY, screenCorners[index].y);
+                    maximumScreenY = std::max(
+                            maximumScreenY, screenCorners[index].y);
+                }
                 boxMinimumX = std::min(boxMinimumX, screenCorners[index].x);
                 boxMaximumX = std::max(boxMaximumX, screenCorners[index].x);
                 boxMinimumY = std::min(boxMinimumY, screenCorners[index].y);
                 boxMaximumY = std::max(boxMaximumY, screenCorners[index].y);
             }
         }
-        for (const auto& edge : edges) {
-            if (!visible[edge[0]] || !visible[edge[1]])
-                continue;
-            for (const std::size_t index : edge) {
-                vertices.push_back(screenCorners[index].x / width * 2.0F - 1.0F);
-                vertices.push_back(1.0F - screenCorners[index].y / height * 2.0F);
-            }
-        }
-        if (std::isfinite(boxMinimumX) &&
-            (boxMaximumX - boxMinimumX < 4.0F || boxMaximumY - boxMinimumY < 4.0F)) {
+        if (std::isfinite(boxMinimumX) && shouldUseCompactEspMarker(
+                boxMaximumX - boxMinimumX, boxMaximumY - boxMinimumY)) {
             const float centerX = (boxMinimumX + boxMaximumX) * 0.5F;
             const float centerY = (boxMinimumY + boxMaximumY) * 0.5F;
-            constexpr float halfSquare = 7.0F;
-            constexpr float halfCross = 11.0F;
-            appendScreenLine(centerX - halfSquare, centerY - halfSquare,
-                             centerX + halfSquare, centerY - halfSquare);
-            appendScreenLine(centerX + halfSquare, centerY - halfSquare,
-                             centerX + halfSquare, centerY + halfSquare);
-            appendScreenLine(centerX + halfSquare, centerY + halfSquare,
-                             centerX - halfSquare, centerY + halfSquare);
-            appendScreenLine(centerX - halfSquare, centerY + halfSquare,
-                             centerX - halfSquare, centerY - halfSquare);
-            appendScreenLine(centerX - halfCross, centerY,
-                             centerX + halfCross, centerY);
-            appendScreenLine(centerX, centerY - halfCross,
-                             centerX, centerY + halfCross);
+            appendCompactCircle(centerX, centerY);
             ++locatorCount;
-        }
-    }
-    for (const auto& chest : chests) {
-        const auto worldCorners = corners(chest.bounds);
-        std::array<ScreenPoint, 8> screenCorners{};
-        std::array<bool, 8> visible{};
-        for (std::size_t index = 0; index < worldCorners.size(); ++index) {
-            visible[index] = projectWorldPoint(
-                    chest.camera, worldCorners[index], width, height,
-                    screenCorners[index]);
+            return;
         }
         for (const auto& edge : edges) {
-            if (!visible[edge[0]] || !visible[edge[1]])
+            ScreenPoint first{};
+            ScreenPoint second{};
+            bool nearPlaneClipped = false;
+            if (!projectClipSegment(
+                        clipCorners[edge[0]], clipCorners[edge[1]], width,
+                        height, first, second,
+                        nearPlaneClipped)) {
                 continue;
-            for (const std::size_t index : edge) {
-                chestVertices.push_back(
-                        screenCorners[index].x / width * 2.0F - 1.0F);
-                chestVertices.push_back(
-                        1.0F - screenCorners[index].y / height * 2.0F);
             }
+            nearPlaneClippedEdges += nearPlaneClipped ? 1U : 0U;
+            target.push_back(first.x / width * 2.0F - 1.0F);
+            target.push_back(1.0F - first.y / height * 2.0F);
+            target.push_back(second.x / width * 2.0F - 1.0F);
+            target.push_back(1.0F - second.y / height * 2.0F);
         }
+    };
+    for (const auto& box : boxes) {
+        appendProjectedBox(box.bounds, vertices, true);
+    }
+    for (const auto& chest : chests) {
+        appendProjectedBox(chest.bounds, chestVertices, false);
+    }
+    for (const auto& ore : ores) {
+        const auto kind = static_cast<std::size_t>(ore.kind);
+        if (kind < oreVertices.size())
+            appendProjectedBox(ore.bounds, oreVertices[kind], false);
+    }
+    if (nearPlaneClippedEdges != 0 &&
+        !nearPlaneClipLogged.exchange(true, std::memory_order_acq_rel)) {
+        char message[128]{};
+        std::snprintf(
+                message, sizeof(message),
+                "entity overlay: stabilized %zu near-plane edge(s)",
+                nearPlaneClippedEdges);
+        logLine(message);
+    }
+    if (!boxes.empty() &&
+        !synchronizedCameraLogged.exchange(true, std::memory_order_acq_rel)) {
+        logLine("entity overlay: frame-synchronized camera active");
     }
     auto& projectionFlag = vertices.empty()
             ? failedProjectionLogged : successfulProjectionLogged;
@@ -614,11 +807,11 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
                 (sample.bounds.minimum.y + sample.bounds.maximum.y) * 0.5F,
                 (sample.bounds.minimum.z + sample.bounds.maximum.z) * 0.5F,
         };
-        const Vec3f relativeCenter = subtract(center, sample.camera.position);
+        const Vec3f relativeCenter = subtract(center, overlayCamera.position);
         const auto centerEye = transform(
-                sample.camera.view,
+                overlayCamera.view,
                 {{relativeCenter.x, relativeCenter.y, relativeCenter.z, 1.0F}});
-        const auto centerClip = transform(sample.camera.projection, centerEye);
+        const auto centerClip = transform(overlayCamera.projection, centerEye);
         const float centerDepth = centerClip[3];
         char message[448]{};
         std::snprintf(
@@ -672,18 +865,42 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
     gl.vertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
 
     if (!vertices.empty()) {
-        drawLines(vertices.data(), vertices.size(), 0.0F, 0.0F, 0.0F, 0.85F, 6.0F);
-        drawLines(vertices.data(), vertices.size(), 0.25F, 1.0F, 0.25F, 1.0F, 3.0F);
+        drawLines(vertices.data(), vertices.size(), 0.0F, 0.0F, 0.0F, 0.85F, 2.0F);
+        drawLines(vertices.data(), vertices.size(), 0.25F, 1.0F, 0.25F, 1.0F, 1.0F);
     }
     if (!chestVertices.empty()) {
         drawLines(chestVertices.data(), chestVertices.size(),
-                  0.0F, 0.0F, 0.0F, 0.9F, 7.0F);
+                  0.0F, 0.0F, 0.0F, 0.9F, 2.0F);
         drawLines(chestVertices.data(), chestVertices.size(),
-                  1.0F, 0.65F, 0.05F, 1.0F, 3.0F);
+                  1.0F, 0.65F, 0.05F, 1.0F, 1.0F);
+    }
+    constexpr std::array<std::array<float, 3>, oreKindCount> oreColors{{
+            {{0.35F, 0.35F, 0.35F}},
+            {{0.85F, 0.72F, 0.55F}},
+            {{0.95F, 0.45F, 0.15F}},
+            {{1.0F, 0.82F, 0.05F}},
+            {{1.0F, 0.12F, 0.12F}},
+            {{0.15F, 0.35F, 1.0F}},
+            {{0.1F, 0.95F, 1.0F}},
+            {{0.1F, 1.0F, 0.35F}},
+            {{0.95F, 0.95F, 0.9F}},
+            {{0.55F, 0.28F, 0.2F}},
+    }};
+    for (std::size_t kind = 0; kind < oreVertices.size(); ++kind) {
+        const auto& kindVertices = oreVertices[kind];
+        if (kindVertices.empty())
+            continue;
+        drawLines(
+                kindVertices.data(), kindVertices.size(),
+                0.0F, 0.0F, 0.0F, 0.9F, 2.0F);
+        drawLines(
+                kindVertices.data(), kindVertices.size(),
+                oreColors[kind][0], oreColors[kind][1], oreColors[kind][2],
+                1.0F, 1.0F);
     }
     if (!locatorVertices.empty()) {
-        drawLines(locatorVertices.data(), locatorVertices.size(), 0.0F, 0.0F, 0.0F, 0.9F, 7.0F);
-        drawLines(locatorVertices.data(), locatorVertices.size(), 1.0F, 0.2F, 0.65F, 1.0F, 3.0F);
+        drawLines(locatorVertices.data(), locatorVertices.size(), 0.0F, 0.0F, 0.0F, 0.9F, 2.0F);
+        drawLines(locatorVertices.data(), locatorVertices.size(), 1.0F, 0.2F, 0.65F, 1.0F, 1.0F);
     }
     if (!metricsGeometry.shadowVertices.empty()) {
         drawLines(metricsGeometry.shadowVertices.data(),

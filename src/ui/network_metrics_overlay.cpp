@@ -94,7 +94,7 @@ NetworkMetricsText formatNetworkMetrics(const NetworkMetricsSnapshot& metrics) {
     } else {
         result.observedTps = "TPS~ --";
     }
-    result.chunks = "CHUNKS " + std::to_string(metrics.chunksReceived) +
+    result.chunks = "CHUNKS " + std::to_string(metrics.loadedChunks) +
             " (" + std::to_string(metrics.chunksPerSecond) + "/S)";
     if (metrics.outstandingSubChunkRequests) {
         result.pending = "PENDING " +

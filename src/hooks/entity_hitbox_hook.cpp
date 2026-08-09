@@ -6,6 +6,7 @@
 #include "core/runtime_state.hpp"
 #include "hooks/minecraft_image.hpp"
 #include "hooks/network_metrics_hook.hpp"
+#include "hooks/overlay_camera_hook.hpp"
 #include "hooks/render_camera.hpp"
 #include "platform/launcher.hpp"
 #include "platform/log.hpp"
@@ -35,9 +36,8 @@ using LevelForEachPlayerFn = void (*)(void* level, PlayerVisitor visitor);
 using LevelGetPrimaryLocalPlayerFn = const void* (*)(const void* level);
 
 std::atomic_bool hookInstalled{false};
-std::atomic_bool acceptedCaptureLogged{false};
+std::atomic_bool batchCaptureLogged{false};
 std::atomic_bool invalidBoundsLogged{false};
-std::atomic_bool invalidCameraLogged{false};
 std::atomic_bool capacityLogged{false};
 std::atomic_bool registryCaptureLogged{false};
 std::atomic_bool playerCaptureLogged{false};
@@ -50,9 +50,8 @@ LevelForEachPlayerFn levelForEachPlayer = nullptr;
 LevelGetPrimaryLocalPlayerFn levelGetPrimaryLocalPlayer = nullptr;
 std::uintptr_t expectedClientLevelVtable{};
 MinecraftImage minecraftImage{};
-std::atomic_uint64_t lastRegistryCaptureFrame{std::numeric_limits<std::uint64_t>::max()};
-std::atomic_uint64_t lastPlayerCaptureFrame{std::numeric_limits<std::uint64_t>::max()};
-std::atomic_uint64_t lastMetricsCaptureFrame{std::numeric_limits<std::uint64_t>::max()};
+std::atomic_uint64_t lastBatchCaptureFrame{
+        std::numeric_limits<std::uint64_t>::max()};
 
 template <class Value>
 Value readObjectField(const void* object, std::ptrdiff_t offset) {
@@ -100,163 +99,133 @@ bool validClientLevel(const void* level) {
     return true;
 }
 
-bool captureRuntimeActorList(
-        const void* level, const CameraFrame& frame) {
-    if (!validClientLevel(level))
-        return false;
+std::span<const EntityHitboxObservation> captureRuntimeEntities(
+        const void* level, std::size_t& actorCount, std::size_t& playerCount) {
+    thread_local std::vector<EntityHitboxObservation> observations;
+    observations.clear();
+    observations.reserve(512);
+    actorCount = 0;
+    playerCount = 0;
+    if (!validClientLevel(level) || actorGetAabb == nullptr)
+        return observations;
 
-    const std::uint64_t frameNumber = entityHitboxPresentationFrame();
-    std::uint64_t previous = lastRegistryCaptureFrame.load(std::memory_order_acquire);
-    while (previous != frameNumber) {
-        if (lastRegistryCaptureFrame.compare_exchange_weak(
-                    previous, frameNumber, std::memory_order_acq_rel,
-                    std::memory_order_acquire)) {
-            const auto actors = levelGetRuntimeActorList(level);
-            const std::size_t count =
-                    std::min(actors.size(), std::size_t{512});
-            const void* localPlayer = levelGetPrimaryLocalPlayer(level);
-            std::size_t captured = 0;
-            for (std::size_t index = 0; index < count; ++index) {
-                const void* actor = actors[index];
-                if (actor == nullptr || actor == localPlayer)
-                    continue;
-                const auto* bounds = actorGetAabb(actor);
-                if (bounds != nullptr && submitEntityHitbox(
-                            actor, level, *bounds, frame) ==
-                            HitboxSubmissionResult::accepted) {
-                    ++captured;
-                }
-            }
-            if (actors.size() > count &&
-                !registryCapacityLogged.exchange(true, std::memory_order_acq_rel)) {
-                logLine("entity registry: capture capped at 512 actors");
-            }
-            if (captured != 0 &&
-                !registryCaptureLogged.exchange(true, std::memory_order_acq_rel)) {
-                char message[128]{};
-                std::snprintf(message, sizeof(message),
-                              "entity registry: captured %zu of %zu active actors",
-                              captured, actors.size());
-                logLine(message);
-            }
-            return true;
+    const void* localPlayer = levelGetPrimaryLocalPlayer(level);
+    const auto actors = levelGetRuntimeActorList(level);
+    const std::size_t count = std::min(actors.size(), std::size_t{512});
+    for (std::size_t index = 0; index < count; ++index) {
+        const void* actor = actors[index];
+        if (actor == nullptr || actor == localPlayer)
+            continue;
+        const auto* bounds = actorGetAabb(actor);
+        if (bounds != nullptr) {
+            observations.push_back({actor, *bounds});
+            ++actorCount;
         }
     }
-    return true;
-}
-
-bool captureRuntimePlayers(const void* level, const CameraFrame& frame) {
-    if (!validClientLevel(level))
-        return false;
-
-    const std::uint64_t frameNumber = entityHitboxPresentationFrame();
-    std::uint64_t previous = lastPlayerCaptureFrame.load(std::memory_order_acquire);
-    while (previous != frameNumber) {
-        if (lastPlayerCaptureFrame.compare_exchange_weak(
-                    previous, frameNumber, std::memory_order_acq_rel,
-                    std::memory_order_acquire)) {
-            constexpr std::size_t maximumPlayers = 256;
-            std::size_t visited = 0;
-            std::size_t captured = 0;
-            const void* localPlayer = levelGetPrimaryLocalPlayer(level);
-            PlayerVisitor visitor = [&](OpaquePlayer& player) {
-                if (visited >= maximumPlayers)
-                    return false;
-                ++visited;
-                const void* actor = static_cast<const void*>(&player);
-                if (actor == localPlayer)
-                    return visited < maximumPlayers;
-                const auto* bounds = actorGetAabb(actor);
-                if (bounds != nullptr && submitEntityHitbox(
-                            actor, level, *bounds, frame) ==
-                            HitboxSubmissionResult::accepted) {
-                    ++captured;
-                }
-                return visited < maximumPlayers;
-            };
-            levelForEachPlayer(const_cast<void*>(level), std::move(visitor));
-            if (visited == maximumPlayers &&
-                !playerCapacityLogged.exchange(true, std::memory_order_acq_rel)) {
-                logLine("player registry: capture capped at 256 players");
-            }
-            if (visited != 0 &&
-                !playerCaptureLogged.exchange(true, std::memory_order_acq_rel)) {
-                char message[128]{};
-                std::snprintf(message, sizeof(message),
-                              "player registry: captured %zu of %zu active players",
-                              captured, visited);
-                logLine(message);
-            }
-            return true;
-        }
+    if (actors.size() > count &&
+        !registryCapacityLogged.exchange(true, std::memory_order_acq_rel)) {
+        logLine("entity registry: capture capped at 512 actors");
     }
-    return true;
+
+    constexpr std::size_t maximumPlayers = 256;
+    std::size_t visited = 0;
+    PlayerVisitor visitor = [&](OpaquePlayer& player) {
+        if (visited >= maximumPlayers || observations.size() >= 512)
+            return false;
+        ++visited;
+        const void* actor = static_cast<const void*>(&player);
+        if (actor == localPlayer)
+            return true;
+        const bool alreadyCaptured = std::any_of(
+                observations.begin(), observations.end(),
+                [actor](const EntityHitboxObservation& observation) {
+                    return observation.identity == actor;
+                });
+        if (!alreadyCaptured) {
+            const auto* bounds = actorGetAabb(actor);
+            if (bounds != nullptr) {
+                observations.push_back({actor, *bounds});
+                ++playerCount;
+            }
+        }
+        return visited < maximumPlayers && observations.size() < 512;
+    };
+    levelForEachPlayer(const_cast<void*>(level), std::move(visitor));
+    if (visited == maximumPlayers &&
+        !playerCapacityLogged.exchange(true, std::memory_order_acq_rel)) {
+        logLine("player registry: capture capped at 256 players");
+    }
+    if (actorCount != 0 &&
+        !registryCaptureLogged.exchange(true, std::memory_order_acq_rel)) {
+        char message[128]{};
+        std::snprintf(message, sizeof(message),
+                      "entity registry: batched %zu of %zu active actors",
+                      actorCount, actors.size());
+        logLine(message);
+    }
+    if (visited != 0 &&
+        !playerCaptureLogged.exchange(true, std::memory_order_acq_rel)) {
+        char message[128]{};
+        std::snprintf(message, sizeof(message),
+                      "player registry: added %zu of %zu active players",
+                      playerCount, visited);
+        logLine(message);
+    }
+    return observations;
 }
 
 } // namespace
 
 extern "C" void dobby_capture_entity_hitbox(
         const void* renderContext, const void* actor) {
-    if (renderContext == nullptr || actor == nullptr)
+    if (!runtimeState().anyEspEnabled() || renderContext == nullptr ||
+        actor == nullptr) {
         return;
+    }
 
     const void* level = readObjectField<const void*>(
             actor, target::kActorLevelOffset);
+    rememberOverlayLevelIdentity(level);
     const std::uint64_t presentation = entityHitboxPresentationFrame();
-    if (lastMetricsCaptureFrame.exchange(
-                presentation, std::memory_order_acq_rel) != presentation) {
-        captureClientServerTick(level);
-    }
+    if (lastBatchCaptureFrame.load(std::memory_order_acquire) == presentation)
+        return;
 
     CameraFrame frame{};
     if (!captureRenderCameraFrame(renderContext, frame))
         return;
-    submitOverlayCamera(level, frame);
-    if (!runtimeState().entityHitboxes() || actorGetAabb == nullptr)
+    if (lastBatchCaptureFrame.exchange(
+                presentation, std::memory_order_acq_rel) == presentation) {
         return;
-
-    const auto* bounds = actorGetAabb(actor);
-    if (bounds == nullptr)
-        return;
-    const bool localPlayer = validClientLevel(level) &&
-            actor == levelGetPrimaryLocalPlayer(level);
-    const auto result = localPlayer
-            ? HitboxSubmissionResult::accepted
-            : submitEntityHitbox(actor, level, *bounds, frame);
-    static_cast<void>(captureRuntimeActorList(level, frame));
-    static_cast<void>(captureRuntimePlayers(level, frame));
-    if (localPlayer)
-        return;
-    std::atomic_bool* sampleFlag = nullptr;
-    const char* resultName = "accepted";
-    switch (result) {
-    case HitboxSubmissionResult::accepted:
-        sampleFlag = &acceptedCaptureLogged;
-        break;
-    case HitboxSubmissionResult::invalidBounds:
-        sampleFlag = &invalidBoundsLogged;
-        resultName = "invalid_bounds";
-        break;
-    case HitboxSubmissionResult::invalidCamera:
-        sampleFlag = &invalidCameraLogged;
-        resultName = "invalid_camera";
-        break;
-    case HitboxSubmissionResult::frameCapacityReached:
-        sampleFlag = &capacityLogged;
-        resultName = "frame_capacity";
-        break;
     }
-    if (sampleFlag != nullptr && !sampleFlag->exchange(true, std::memory_order_acq_rel)) {
+    std::size_t actorCount = 0;
+    std::size_t playerCount = 0;
+    const auto observations = runtimeState().entityHitboxes()
+            ? captureRuntimeEntities(level, actorCount, playerCount)
+            : std::span<const EntityHitboxObservation>{};
+    const HitboxFrameSubmission result = submitEntityHitboxFrame(
+            level, frame, observations);
+    if (result.invalid != 0 &&
+        !invalidBoundsLogged.exchange(true, std::memory_order_acq_rel)) {
+        logLine("ERROR: entity overlay rejected invalid client bounds");
+    }
+    if (result.capacityRejected != 0 &&
+        !capacityLogged.exchange(true, std::memory_order_acq_rel)) {
+        logLine("entity overlay: frame capture capped at 512 actors");
+    }
+    if (!observations.empty() &&
+        !batchCaptureLogged.exchange(true, std::memory_order_acq_rel)) {
+        const EntityAabb& bounds = observations.front().bounds;
         char message[768]{};
         std::snprintf(
                 message, sizeof(message),
-                "entity capture sample: result=%s bounds=(%.3f,%.3f,%.3f)->"
+                "entity batch sample: accepted=%zu actors=%zu players=%zu "
+                "bounds=(%.3f,%.3f,%.3f)->"
                 "(%.3f,%.3f,%.3f) camera=(%.3f,%.3f,%.3f) "
                 "view_diag=(%.3f,%.3f,%.3f,%.3f) "
                 "projection_diag=(%.3f,%.3f,%.3f,%.3f)",
-                resultName,
-                bounds->minimum.x, bounds->minimum.y, bounds->minimum.z,
-                bounds->maximum.x, bounds->maximum.y, bounds->maximum.z,
+                result.accepted, actorCount, playerCount,
+                bounds.minimum.x, bounds.minimum.y, bounds.minimum.z,
+                bounds.maximum.x, bounds.maximum.y, bounds.maximum.z,
                 frame.position.x, frame.position.y, frame.position.z,
                 frame.view[0], frame.view[5], frame.view[10], frame.view[15],
                 frame.projection[0], frame.projection[5],
@@ -269,6 +238,13 @@ extern "C" void dobby_capture_entity_hitbox(
 
 extern "C" [[gnu::naked]] void dobby_actor_render_detour() {
     asm volatile(
+            // The canonical ESP mask is a lock-free byte. When every ESP
+            // module is disabled, skip the capture call and its register-save
+            // prologue entirely. x16 is ABI-defined intra-procedure scratch.
+            "adrp x16, dobby_esp_feature_mask\n"
+            "add x16, x16, :lo12:dobby_esp_feature_mask\n"
+            "ldarb w16, [x16]\n"
+            "cbz w16, 1f\n"
             // Capture the context and actor before Bedrock's render prologue.
             // x0-x8 and x30 are restored because the capture is transparent.
             "sub sp, sp, #96\n"
@@ -288,6 +264,7 @@ extern "C" [[gnu::naked]] void dobby_actor_render_detour() {
             "ldr x8, [sp, #64]\n"
             "ldr x30, [sp, #80]\n"
             "add sp, sp, #96\n"
+            "1:\n"
             // Replay the four validated ActorRenderDispatcher instructions.
             "sub sp, sp, #144\n"
             "stp d11, d10, [sp, #48]\n"

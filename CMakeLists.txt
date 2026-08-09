@@ -17,10 +17,12 @@ set(DOBBY_COMMON_SOURCES
     src/metrics/chunk_metrics_layout.cpp
     src/metrics/network_metrics.cpp
     src/platform/files.cpp
+    src/platform/safe_memory.cpp
     src/platform/preferences_store.cpp
     src/ui/chest_esp.cpp
     src/ui/entity_hitbox_overlay.cpp
     src/ui/network_metrics_overlay.cpp
+    src/ui/ore_esp.cpp
     src/ui/window_policy.cpp)
 
 if(ANDROID)
@@ -32,6 +34,8 @@ if(ANDROID)
         src/hooks/entity_hitbox_hook.cpp
         src/hooks/minecraft_image.cpp
         src/hooks/network_metrics_hook.cpp
+        src/hooks/ore_esp_scanner.cpp
+        src/hooks/overlay_camera_hook.cpp
         src/hooks/packet_hooks.cpp
         src/hooks/render_camera.cpp
         src/platform/launcher.cpp

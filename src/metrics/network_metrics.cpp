@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <limits>
 #include <mutex>
 
@@ -19,6 +20,7 @@ constexpr int kMaximumAcceptedPingMilliseconds = 600000;
 constexpr std::uint64_t kMaximumAcceptedTickDelta = 1000000;
 constexpr std::uint64_t kChunkRateWindowMilliseconds = 1000;
 constexpr std::size_t kMaximumRecentChunkSamples = 4096;
+constexpr std::size_t kMaximumLoadedChunks = 16384;
 
 std::uint64_t monotonicMilliseconds() {
     return static_cast<std::uint64_t>(
@@ -70,8 +72,6 @@ void NetworkMetricsTracker::recordServerTick(
 }
 
 void NetworkMetricsTracker::recordChunk(std::uint64_t nowMilliseconds) {
-    if (chunksReceived_ != std::numeric_limits<std::uint64_t>::max())
-        ++chunksReceived_;
     recentChunkMilliseconds_.push_back(nowMilliseconds);
     while (!recentChunkMilliseconds_.empty() &&
            recentChunkMilliseconds_.front() <= nowMilliseconds &&
@@ -81,6 +81,37 @@ void NetworkMetricsTracker::recordChunk(std::uint64_t nowMilliseconds) {
     }
     while (recentChunkMilliseconds_.size() > kMaximumRecentChunkSamples)
         recentChunkMilliseconds_.pop_front();
+}
+
+std::size_t NetworkMetricsTracker::LoadedChunkIdentityHash::operator()(
+        const LoadedChunkIdentity& identity) const {
+    std::size_t value = std::hash<std::uintptr_t>{}(identity.level);
+    value ^= std::hash<std::int32_t>{}(identity.x) + 0x9e3779b9U +
+            (value << 6U) + (value >> 2U);
+    value ^= std::hash<std::int32_t>{}(identity.z) + 0x9e3779b9U +
+            (value << 6U) + (value >> 2U);
+    return value;
+}
+
+void NetworkMetricsTracker::recordChunkLoaded(
+        std::uintptr_t levelIdentity, std::int32_t chunkX,
+        std::int32_t chunkZ) {
+    if (levelIdentity == 0)
+        return;
+    const LoadedChunkIdentity identity{levelIdentity, chunkX, chunkZ};
+    if (loadedChunks_.size() >= kMaximumLoadedChunks &&
+        !loadedChunks_.contains(identity)) {
+        return;
+    }
+    loadedChunks_.insert(identity);
+}
+
+void NetworkMetricsTracker::recordChunkUnloaded(
+        std::uintptr_t levelIdentity, std::int32_t chunkX,
+        std::int32_t chunkZ) {
+    if (levelIdentity == 0)
+        return;
+    loadedChunks_.erase({levelIdentity, chunkX, chunkZ});
 }
 
 void NetworkMetricsTracker::recordSubChunkRequest(std::uint64_t count) {
@@ -106,7 +137,7 @@ NetworkMetricsSnapshot NetworkMetricsTracker::snapshot(
     }
     if (!result.connected || tickSamples_.size() < 2) {
         if (result.connected) {
-            result.chunksReceived = chunksReceived_;
+            result.loadedChunks = loadedChunks_.size();
             result.chunksPerSecond = static_cast<std::size_t>(std::count_if(
                     recentChunkMilliseconds_.begin(), recentChunkMilliseconds_.end(),
                     [nowMilliseconds](std::uint64_t capturedAt) {
@@ -120,7 +151,7 @@ NetworkMetricsSnapshot NetworkMetricsTracker::snapshot(
         return result;
     }
 
-    result.chunksReceived = chunksReceived_;
+    result.loadedChunks = loadedChunks_.size();
     result.chunksPerSecond = static_cast<std::size_t>(std::count_if(
             recentChunkMilliseconds_.begin(), recentChunkMilliseconds_.end(),
             [nowMilliseconds](std::uint64_t capturedAt) {
@@ -153,7 +184,7 @@ void NetworkMetricsTracker::reset() {
     averagePingMilliseconds_.reset();
     pingCapturedAtMilliseconds_ = 0;
     tickSamples_.clear();
-    chunksReceived_ = 0;
+    loadedChunks_.clear();
     recentChunkMilliseconds_.clear();
     outstandingSubChunkRequests_ = 0;
 }
@@ -210,6 +241,26 @@ void recordObservedServerTick(const void* levelIdentity, std::uint64_t tick) {
 void recordLevelChunkDecode() {
     std::lock_guard lock(globalMetricsMutex);
     globalMetrics.recordChunk(monotonicMilliseconds());
+}
+
+void recordClientChunkLoaded(
+        const void* levelIdentity, std::int32_t chunkX,
+        std::int32_t chunkZ) {
+    if (levelIdentity == nullptr)
+        return;
+    std::lock_guard lock(globalMetricsMutex);
+    globalMetrics.recordChunkLoaded(
+            reinterpret_cast<std::uintptr_t>(levelIdentity), chunkX, chunkZ);
+}
+
+void recordClientChunkUnloaded(
+        const void* levelIdentity, std::int32_t chunkX,
+        std::int32_t chunkZ) {
+    if (levelIdentity == nullptr)
+        return;
+    std::lock_guard lock(globalMetricsMutex);
+    globalMetrics.recordChunkUnloaded(
+            reinterpret_cast<std::uintptr_t>(levelIdentity), chunkX, chunkZ);
 }
 
 void recordSubChunkRequest(std::uint64_t count) {

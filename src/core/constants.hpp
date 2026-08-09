@@ -6,7 +6,7 @@
 
 namespace dobby {
 
-inline constexpr char kDobbyVersion[] = "2.7.0";
+inline constexpr char kDobbyVersion[] = "2.8.8";
 inline constexpr char kMinecraftVersion[] = "1.26.40.5";
 inline constexpr char kMinecraftBuildId[] = "5893edc8d56c93cbdb50e0f9436320236b78c89d";
 inline constexpr char kAbi[] = "arm64-v8a";
@@ -141,12 +141,30 @@ inline constexpr std::size_t kSubChunkSize = 0x68;
 inline constexpr std::ptrdiff_t kSubChunkStandardStorageOffset = 0x30;
 inline constexpr std::ptrdiff_t kSubChunkAbsoluteIndexOffset = 0x61;
 inline constexpr std::size_t kSubChunkStorageGetElementVtableSlot = 4;
-inline constexpr std::size_t kSubChunkStoragePaletteFilterVtableSlot = 16;
+inline constexpr std::size_t kSubChunkStoragePackedElementVtableSlot = 20;
+inline constexpr std::size_t kSubChunkStorageBitsPerElementVtableSlot = 21;
+inline constexpr std::size_t kSubChunkStoragePaletteSnapshotVtableSlot = 22;
+
+// Block::mBlockType and the HashedString name accessors for the exact Android
+// target. BlockType + 0xc8 is a HashedString; its Android libc++ string starts
+// eight bytes later. Both boundaries are independently proven by accessors.
+inline constexpr std::ptrdiff_t kBlockBlockTypeOffset = 0x68;
+inline constexpr std::uintptr_t kBlockTypeGetHashedNameOffset = 0x0f33323c;
+inline constexpr std::array<std::uint8_t, 8> kBlockTypeGetHashedNameSignature{
+        0x00, 0x20, 0x03, 0x91, 0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::ptrdiff_t kBlockTypeHashedNameOffset = 0xc8;
+inline constexpr std::uintptr_t kHashedStringGetValueOffset = 0x11aa3e60;
+inline constexpr std::array<std::uint8_t, 8> kHashedStringGetValueSignature{
+        0x00, 0x20, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::ptrdiff_t kHashedStringValueOffset = 0x8;
 
 struct SubChunkStorageDispatch {
     std::uintptr_t vtableAddressPointOffset;
     std::uintptr_t getElementOffset;
-    std::uintptr_t paletteFilterOffset;
+    std::uintptr_t packedElementOffset;
+    std::uintptr_t bitsPerElementOffset;
+    std::uintptr_t paletteSnapshotOffset;
+    std::uint8_t bitsPerElement;
 };
 
 // Exact Android arm64 dispatch tables for Block palette widths supported by
@@ -154,15 +172,24 @@ struct SubChunkStorageDispatch {
 // implementations are rejected before any virtual method is called.
 inline constexpr std::array<SubChunkStorageDispatch, 9>
         kSubChunkStorageDispatches{{
-                {0x12348140, 0x0f9ae45c, 0x0f9ae954},
-                {0x12348248, 0x0f9aee14, 0x0f9b0d88},
-                {0x12348328, 0x0f9b1468, 0x0f9b3718},
-                {0x12348408, 0x0f9b3ea4, 0x0f9b6d14},
-                {0x123484e8, 0x0f9b7424, 0x0f9b92bc},
-                {0x123485c8, 0x0f9b99c0, 0x0f9bb668},
-                {0x123486a8, 0x0f9bbd00, 0x0f9bdc6c},
-                {0x12348788, 0x0f9be320, 0x0f9bffa8},
-                {0x12348868, 0x0f9c06e4, 0x0f9c2318},
+                {0x12348140, 0x0f9ae45c, 0x0f9aea28, 0x0f9aea34,
+                 0x0f9aea3c, 0},
+                {0x12348248, 0x0f9aee14, 0x0f9b0fdc, 0x0f9b0fec,
+                 0x0f9b0ff4, 1},
+                {0x12348328, 0x0f9b1468, 0x0f9b3a40, 0x0f9b3a50,
+                 0x0f9b3a58, 2},
+                {0x12348408, 0x0f9b3ea4, 0x0f9b6fd8, 0x0f9b6fe8,
+                 0x0f9b6ff0, 3},
+                {0x123484e8, 0x0f9b7424, 0x0f9b9584, 0x0f9b9594,
+                 0x0f9b959c, 4},
+                {0x123485c8, 0x0f9b99c0, 0x0f9bb8e8, 0x0f9bb8f8,
+                 0x0f9bb900, 5},
+                {0x123486a8, 0x0f9bbd00, 0x0f9bdee0, 0x0f9bdef0,
+                 0x0f9bdef8, 6},
+                {0x12348788, 0x0f9be320, 0x0f9c02b0, 0x0f9c02c0,
+                 0x0f9c02c8, 8},
+                {0x12348868, 0x0f9c06e4, 0x0f9c2630, 0x0f9c2640,
+                 0x0f9c2648, 16},
         }};
 // Returns Actor::mBuiltInComponents.mAABBShapeComponent. AABB is the first
 // member of that component, so its address is also the collision AABB address.
@@ -222,6 +249,18 @@ inline constexpr std::uintptr_t kLevelChunkDispatcherVtableSlotOffset = 0x1209f3
 inline constexpr std::array<std::uint8_t, 16> kLevelChunkDispatcherSignature{
         0xff, 0x43, 0x01, 0xd1, 0xfd, 0x7b, 0x02, 0xa9,
         0xf5, 0x1b, 0x00, 0xf9, 0xf4, 0x4f, 0x04, 0xa9};
+
+// LevelRendererCamera::render(BaseActorRenderContext&, ViewRenderObject const&,
+// IClientInstance&) as overridden by LevelRendererPlayer. The inherited slot
+// is used instead of a conditional block-entity pass, so every level render
+// supplies one live context without retaining any client-owned pointers.
+inline constexpr std::uintptr_t kLevelRenderFrameOffset = 0x0ae0aba8;
+inline constexpr std::uintptr_t kLevelRenderFrameVtableSlotOffset =
+        0x11fbe330;
+inline constexpr std::array<std::uint8_t, 16>
+        kLevelRenderFrameSignature{
+                0xff, 0x83, 0x02, 0xd1, 0xfd, 0x7b, 0x06, 0xa9,
+                0xf8, 0x5f, 0x07, 0xa9, 0xf6, 0x57, 0x08, 0xa9};
 inline constexpr std::uintptr_t kLevelChunkVtableOffset = 0x12073298;
 
 inline constexpr std::uintptr_t kSubChunkDispatcherOffset = 0x0c2bb704;
@@ -272,6 +311,8 @@ inline constexpr std::array<std::uint8_t, 12> kCameraPositionGetterSignature{
 // MatrixStacks of that size. The camera vectors follow the third stack and
 // the 0x40-byte inverse-view matrix.
 inline constexpr std::ptrdiff_t kRenderContextScreenContextOffset = 0x28;
+inline constexpr std::ptrdiff_t kRenderContextCameraStateOffset = 0xa8;
+inline constexpr std::ptrdiff_t kRenderCameraStatePositionOffset = 0x34;
 // Actor::getLevel() at image offset 0x0eca7920 loads this exact member.
 // Nearby code confirms that 0x1c8 belongs to a different actor field.
 inline constexpr std::ptrdiff_t kActorLevelOffset = 0x1d0;

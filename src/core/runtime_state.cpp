@@ -7,6 +7,45 @@
 
 namespace dobby {
 
+namespace {
+
+constexpr std::uint8_t kEntityHitboxesBit = 1U << 0U;
+constexpr std::uint8_t kChestEspBit = 1U << 1U;
+constexpr std::uint8_t kOreEspBit = 1U << 2U;
+constexpr std::uint8_t kAllEspBits =
+        kEntityHitboxesBit | kChestEspBit | kOreEspBit;
+
+} // namespace
+
+extern "C" [[gnu::visibility("hidden")]]
+std::atomic_uint8_t dobby_esp_feature_mask{kAllEspBits};
+
+static_assert(std::atomic_uint8_t::is_always_lock_free);
+static_assert(sizeof(std::atomic_uint8_t) == sizeof(std::uint8_t));
+
+namespace {
+
+bool espFeatureEnabled(std::uint8_t feature) {
+    return (dobby_esp_feature_mask.load(std::memory_order_relaxed) & feature) != 0;
+}
+
+void setEspFeature(std::uint8_t feature, bool enabled) {
+    if (enabled) {
+        dobby_esp_feature_mask.fetch_or(feature, std::memory_order_relaxed);
+    } else {
+        dobby_esp_feature_mask.fetch_and(
+                static_cast<std::uint8_t>(~feature), std::memory_order_relaxed);
+    }
+}
+
+bool toggleEspFeature(std::uint8_t feature) {
+    const std::uint8_t previous =
+            dobby_esp_feature_mask.fetch_xor(feature, std::memory_order_relaxed);
+    return ((previous ^ feature) & feature) != 0;
+}
+
+} // namespace
+
 RuntimeState::RuntimeState()
 : sessionStartedAt_(timestamp()),
   autoPopup_(config().autoPopup),
@@ -15,11 +54,15 @@ RuntimeState::RuntimeState()
             .autoPopup = config().autoPopup,
             .entityHitboxes = true,
             .chestEsp = true,
+            .oreEsp = true,
             .networkMetricsOverlay = true,
     });
     autoPopup_.store(preferences.autoPopup, std::memory_order_relaxed);
-    entityHitboxes_.store(preferences.entityHitboxes, std::memory_order_relaxed);
-    chestEsp_.store(preferences.chestEsp, std::memory_order_relaxed);
+    std::uint8_t espMask = 0;
+    espMask |= preferences.entityHitboxes ? kEntityHitboxesBit : 0;
+    espMask |= preferences.chestEsp ? kChestEspBit : 0;
+    espMask |= preferences.oreEsp ? kOreEspBit : 0;
+    dobby_esp_feature_mask.store(espMask, std::memory_order_relaxed);
     networkMetricsOverlay_.store(
             preferences.networkMetricsOverlay, std::memory_order_relaxed);
 }
@@ -88,12 +131,16 @@ bool RuntimeState::toggleVerbose() {
     return !verbose_.exchange(!verbose(), std::memory_order_relaxed);
 }
 
+bool RuntimeState::anyEspEnabled() const {
+    return dobby_esp_feature_mask.load(std::memory_order_relaxed) != 0;
+}
+
 bool RuntimeState::entityHitboxes() const {
-    return entityHitboxes_.load(std::memory_order_relaxed);
+    return espFeatureEnabled(kEntityHitboxesBit);
 }
 
 void RuntimeState::setEntityHitboxes(bool enabled) {
-    entityHitboxes_.store(enabled, std::memory_order_relaxed);
+    setEspFeature(kEntityHitboxesBit, enabled);
 }
 
 bool RuntimeState::entityHitboxesAvailable() const {
@@ -105,11 +152,11 @@ void RuntimeState::setEntityHitboxesAvailable(bool available) {
 }
 
 bool RuntimeState::chestEsp() const {
-    return chestEsp_.load(std::memory_order_relaxed);
+    return espFeatureEnabled(kChestEspBit);
 }
 
 bool RuntimeState::toggleChestEsp() {
-    return !chestEsp_.exchange(!chestEsp(), std::memory_order_relaxed);
+    return toggleEspFeature(kChestEspBit);
 }
 
 bool RuntimeState::chestEspAvailable() const {
@@ -118,6 +165,22 @@ bool RuntimeState::chestEspAvailable() const {
 
 void RuntimeState::setChestEspAvailable(bool available) {
     chestEspAvailable_.store(available, std::memory_order_relaxed);
+}
+
+bool RuntimeState::oreEsp() const {
+    return espFeatureEnabled(kOreEspBit);
+}
+
+bool RuntimeState::toggleOreEsp() {
+    return toggleEspFeature(kOreEspBit);
+}
+
+bool RuntimeState::oreEspAvailable() const {
+    return oreEspAvailable_.load(std::memory_order_relaxed);
+}
+
+void RuntimeState::setOreEspAvailable(bool available) {
+    oreEspAvailable_.store(available, std::memory_order_relaxed);
 }
 
 bool RuntimeState::networkMetricsOverlay() const {
@@ -134,6 +197,7 @@ DeveloperPreferences RuntimeState::developerPreferences() const {
             .autoPopup = autoPopup(),
             .entityHitboxes = entityHitboxes(),
             .chestEsp = chestEsp(),
+            .oreEsp = oreEsp(),
             .networkMetricsOverlay = networkMetricsOverlay(),
     };
 }
