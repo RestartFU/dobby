@@ -257,6 +257,7 @@ bool entityHitboxObservedForPresentation(
 
 #include "core/runtime_state.hpp"
 #include "hooks/network_metrics_hook.hpp"
+#include "metrics/client_performance.hpp"
 #include "metrics/network_metrics.hpp"
 #include "platform/launcher.hpp"
 #include "platform/log.hpp"
@@ -505,6 +506,8 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
         captureObservedClientServerTick();
     const NetworkMetricsSnapshot metrics = metricsEnabled
             ? currentNetworkMetrics() : NetworkMetricsSnapshot{};
+    const ClientPerformanceSnapshot performance = metricsEnabled
+            ? captureClientPerformance() : ClientPerformanceSnapshot{};
     thread_local std::vector<CapturedBox> boxes;
     boxes.clear();
     boxes.reserve(kMaximumBoxesPerFrame);
@@ -630,7 +633,7 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
     if (width <= 0.0F || height <= 0.0F)
         return;
     const NetworkMetricsGeometry metricsGeometry =
-            buildNetworkMetricsGeometry(metrics, width, height);
+            buildNetworkMetricsGeometry(metrics, width, height, performance);
     if (boxes.empty() && chests.empty() && ores.empty() &&
         metricsGeometry.shadowVertices.empty())
         return;
@@ -925,6 +928,14 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
         drawLines(metricsGeometry.pendingVertices.data(),
                   metricsGeometry.pendingVertices.size(),
                   1.0F, 0.8F, 0.3F, 1.0F,
+                  metricsGeometry.lineWidth);
+        drawLines(metricsGeometry.fpsVertices.data(),
+                  metricsGeometry.fpsVertices.size(),
+                  1.0F, 1.0F, 1.0F, 1.0F,
+                  metricsGeometry.lineWidth);
+        drawLines(metricsGeometry.memoryVertices.data(),
+                  metricsGeometry.memoryVertices.size(),
+                  0.8F, 0.65F, 1.0F, 1.0F,
                   metricsGeometry.lineWidth);
     }
     const GLenum drawError = gl.getError();

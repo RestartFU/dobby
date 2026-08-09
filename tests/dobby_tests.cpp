@@ -7,6 +7,7 @@
 #include "diagnostics/stream_probe.hpp"
 #include "diagnostics/violation_decoder.hpp"
 #include "metrics/chunk_metrics_layout.hpp"
+#include "metrics/client_performance.hpp"
 #include "network/packet_names.hpp"
 #include "metrics/network_metrics.hpp"
 #include "platform/preferences_store.hpp"
@@ -511,6 +512,43 @@ void testNetworkMetrics() {
     dobby::setOutstandingChunkMetricsAvailable(false);
 }
 
+void testClientPerformanceMetrics() {
+    dobby::ClientPerformanceTracker performance;
+    for (std::uint64_t frame = 0; frame <= 100; ++frame) {
+        const bool memorySampleDue =
+                performance.recordPresentation(frame * 10'000);
+        require(memorySampleDue == (frame == 0 || frame == 100));
+    }
+    performance.recordResidentBytes(768ULL * 1024ULL * 1024ULL);
+    const auto snapshot = performance.snapshot(1'000'000);
+    require(snapshot.framesPerSecond.has_value());
+    require(std::fabs(*snapshot.framesPerSecond - 100.0) < 0.001);
+    require(snapshot.residentBytes == 768ULL * 1024ULL * 1024ULL);
+    require(performance.retainedPresentationSamples() == 101);
+
+    dobby::NetworkMetricsSnapshot disconnected;
+    const auto text = dobby::formatNetworkMetrics(disconnected, snapshot);
+    require(text.visible);
+    require(text.ping.empty());
+    require(text.framesPerSecond == "FPS 100");
+    require(text.residentMemory == "MEM 768 MB");
+    const auto geometry = dobby::buildNetworkMetricsGeometry(
+            disconnected, 1280.0F, 720.0F, snapshot);
+    require(!geometry.shadowVertices.empty());
+    require(!geometry.fpsVertices.empty());
+    require(!geometry.memoryVertices.empty());
+
+    dobby::ClientPerformanceSnapshot gigabytes;
+    gigabytes.residentBytes = 1536ULL * 1024ULL * 1024ULL;
+    require(dobby::formatNetworkMetrics(disconnected, gigabytes)
+                    .residentMemory == "MEM 1.5 GB");
+    require(!performance.snapshot(1'300'001).framesPerSecond);
+
+    for (std::uint64_t frame = 101; frame < 2'000; ++frame)
+        performance.recordPresentation(frame * 1'000);
+    require(performance.retainedPresentationSamples() <= 512);
+}
+
 void testConfigurationAndPacketCatalog() {
     assert(dobby::parseBoolean("true", false));
     assert(!dobby::parseBoolean("off", true));
@@ -680,6 +718,7 @@ int main() {
     testEntityProjection();
     testChestEspRegistry();
     testNetworkMetrics();
+    testClientPerformanceMetrics();
     testConfigurationAndPacketCatalog();
     testDeveloperPreferences();
     testOreEspRegistry();

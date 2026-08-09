@@ -23,15 +23,18 @@ Glyph glyph(char character) {
     case '7': return {{31, 1, 2, 4, 8, 8, 8}};
     case '8': return {{14, 17, 17, 14, 17, 17, 14}};
     case '9': return {{14, 17, 17, 15, 1, 1, 14}};
+    case 'B': return {{30, 17, 17, 30, 17, 17, 30}};
     case 'C': return {{14, 17, 16, 16, 16, 17, 14}};
     case 'D': return {{30, 17, 17, 17, 17, 17, 30}};
     case 'E': return {{31, 16, 16, 30, 16, 16, 31}};
+    case 'F': return {{31, 16, 16, 30, 16, 16, 16}};
     case 'G': return {{14, 17, 16, 23, 17, 17, 15}};
     case 'H': return {{17, 17, 17, 31, 17, 17, 17}};
     case 'I': return {{14, 4, 4, 4, 4, 4, 14}};
     case 'M': return {{17, 27, 21, 21, 17, 17, 17}};
     case 'N': return {{17, 25, 21, 19, 17, 17, 17}};
     case 'P': return {{30, 17, 17, 30, 16, 16, 16}};
+    case 'R': return {{30, 17, 17, 30, 20, 18, 17}};
     case 'K': return {{17, 18, 20, 24, 20, 18, 17}};
     case 'S': return {{15, 16, 16, 14, 1, 1, 30}};
     case 'T': return {{31, 4, 4, 4, 4, 4, 4}};
@@ -80,34 +83,62 @@ void appendText(std::vector<float>& vertices, std::string_view text,
 
 } // namespace
 
-NetworkMetricsText formatNetworkMetrics(const NetworkMetricsSnapshot& metrics) {
+NetworkMetricsText formatNetworkMetrics(
+        const NetworkMetricsSnapshot& metrics,
+        const ClientPerformanceSnapshot& performance) {
     NetworkMetricsText result;
-    if (!metrics.connected || !metrics.pingMilliseconds)
-        return result;
-    result.visible = true;
-    result.ping = "PING " + std::to_string(*metrics.pingMilliseconds) + " MS";
-    if (metrics.observedTicksPerSecond) {
+    if (metrics.connected && metrics.pingMilliseconds) {
+        result.ping =
+                "PING " + std::to_string(*metrics.pingMilliseconds) + " MS";
+        if (metrics.observedTicksPerSecond) {
+            char value[32]{};
+            std::snprintf(value, sizeof(value), "TPS~ %.1f",
+                          *metrics.observedTicksPerSecond);
+            result.observedTps = value;
+        } else {
+            result.observedTps = "TPS~ --";
+        }
+        result.chunks = "CHUNKS " + std::to_string(metrics.loadedChunks) +
+                " (" + std::to_string(metrics.chunksPerSecond) + "/S)";
+        if (metrics.outstandingSubChunkRequests) {
+            result.pending = "PENDING " +
+                    std::to_string(*metrics.outstandingSubChunkRequests);
+        }
+    }
+    if (performance.framesPerSecond) {
         char value[32]{};
-        std::snprintf(value, sizeof(value), "TPS~ %.1f",
-                      *metrics.observedTicksPerSecond);
-        result.observedTps = value;
-    } else {
-        result.observedTps = "TPS~ --";
+        std::snprintf(value, sizeof(value), "FPS %.0f",
+                      *performance.framesPerSecond);
+        result.framesPerSecond = value;
     }
-    result.chunks = "CHUNKS " + std::to_string(metrics.loadedChunks) +
-            " (" + std::to_string(metrics.chunksPerSecond) + "/S)";
-    if (metrics.outstandingSubChunkRequests) {
-        result.pending = "PENDING " +
-                std::to_string(*metrics.outstandingSubChunkRequests);
+    if (performance.residentBytes) {
+        constexpr double bytesPerMegabyte = 1024.0 * 1024.0;
+        constexpr double bytesPerGigabyte = 1024.0 * bytesPerMegabyte;
+        char value[32]{};
+        if (static_cast<double>(*performance.residentBytes) >=
+            bytesPerGigabyte) {
+            std::snprintf(
+                    value, sizeof(value), "MEM %.1f GB",
+                    static_cast<double>(*performance.residentBytes) /
+                            bytesPerGigabyte);
+        } else {
+            std::snprintf(
+                    value, sizeof(value), "MEM %.0f MB",
+                    static_cast<double>(*performance.residentBytes) /
+                            bytesPerMegabyte);
+        }
+        result.residentMemory = value;
     }
+    result.visible = !result.ping.empty() || !result.framesPerSecond.empty() ||
+            !result.residentMemory.empty();
     return result;
 }
 
 NetworkMetricsGeometry buildNetworkMetricsGeometry(
         const NetworkMetricsSnapshot& metrics, float surfaceWidth,
-        float surfaceHeight) {
+        float surfaceHeight, const ClientPerformanceSnapshot& performance) {
     NetworkMetricsGeometry result;
-    const auto text = formatNetworkMetrics(metrics);
+    const auto text = formatNetworkMetrics(metrics, performance);
     if (!text.visible || !std::isfinite(surfaceWidth) ||
         !std::isfinite(surfaceHeight) || surfaceWidth <= 0.0F ||
         surfaceHeight <= 0.0F) {
@@ -120,33 +151,26 @@ NetworkMetricsGeometry buildNetworkMetricsGeometry(
     const float lineHeight = 9.0F * pixel;
     const float longest = std::max({
             textWidth(text.ping, pixel), textWidth(text.observedTps, pixel),
-            textWidth(text.chunks, pixel), textWidth(text.pending, pixel)});
+            textWidth(text.chunks, pixel), textWidth(text.pending, pixel),
+            textWidth(text.framesPerSecond, pixel),
+            textWidth(text.residentMemory, pixel)});
     const float x = std::max(0.0F, surfaceWidth - margin - longest);
-    const float firstY = margin;
-    const float secondY = firstY + lineHeight;
-    const float thirdY = secondY + lineHeight;
-    const float fourthY = thirdY + lineHeight;
-
-    appendText(result.pingVertices, text.ping, x, firstY, pixel,
-               surfaceWidth, surfaceHeight);
-    appendText(result.tpsVertices, text.observedTps, x, secondY, pixel,
-               surfaceWidth, surfaceHeight);
-    appendText(result.chunkVertices, text.chunks, x, thirdY, pixel,
-               surfaceWidth, surfaceHeight);
-    if (!text.pending.empty()) {
-        appendText(result.pendingVertices, text.pending, x, fourthY, pixel,
+    float y = margin;
+    const auto appendLine = [&](std::vector<float>& vertices,
+                                const std::string& value) {
+        if (value.empty())
+            return;
+        appendText(vertices, value, x, y, pixel, surfaceWidth, surfaceHeight);
+        appendText(result.shadowVertices, value, x + pixel, y + pixel, pixel,
                    surfaceWidth, surfaceHeight);
-    }
-    appendText(result.shadowVertices, text.ping, x + pixel, firstY + pixel,
-               pixel, surfaceWidth, surfaceHeight);
-    appendText(result.shadowVertices, text.observedTps, x + pixel,
-               secondY + pixel, pixel, surfaceWidth, surfaceHeight);
-    appendText(result.shadowVertices, text.chunks, x + pixel,
-               thirdY + pixel, pixel, surfaceWidth, surfaceHeight);
-    if (!text.pending.empty()) {
-        appendText(result.shadowVertices, text.pending, x + pixel,
-                   fourthY + pixel, pixel, surfaceWidth, surfaceHeight);
-    }
+        y += lineHeight;
+    };
+    appendLine(result.pingVertices, text.ping);
+    appendLine(result.tpsVertices, text.observedTps);
+    appendLine(result.chunkVertices, text.chunks);
+    appendLine(result.pendingVertices, text.pending);
+    appendLine(result.fpsVertices, text.framesPerSecond);
+    appendLine(result.memoryVertices, text.residentMemory);
     result.lineWidth = pixel;
     return result;
 }

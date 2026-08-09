@@ -15,8 +15,10 @@ set(DOBBY_COMMON_SOURCES
     src/diagnostics/stream_probe.cpp
     src/diagnostics/violation_decoder.cpp
     src/metrics/chunk_metrics_layout.cpp
+    src/metrics/client_performance.cpp
     src/metrics/network_metrics.cpp
     src/platform/files.cpp
+    src/platform/process_memory.cpp
     src/platform/safe_memory.cpp
     src/platform/preferences_store.cpp
     src/ui/chest_esp.cpp
