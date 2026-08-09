@@ -33,6 +33,7 @@ CMakeFiles/
 /media/*
 !/media/image.png
 !/media/esp.png
+!/media/debugger.png
 
 # Credentials and local configuration
 .env

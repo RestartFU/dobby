@@ -7,7 +7,9 @@ It captures packet violations and raw decode evidence, displays entity/player hi
 
 ## In-game diagnostic
 
-`Mods > Dobby` contains the network-metrics overlay. The compact top-right overlay shows native `PING`, client-observed `TPS~`, currently loaded client chunks with their one-second arrival rate, and outstanding subchunk requests while connected.
+`Mods > Dobby` contains the developer overlay. It shows native `PING`, client-observed `TPS~`, loaded chunks and outstanding requests, plus client `FPS` and resident memory use.
+
+![Dobby developer metrics overlay](media/debugger.png)
 
 `Chest ESP` outlines chests found in Bedrock's decoded client chunk storage. It does not request or modify world data, so concealed chests appear only if the server actually sent them.
 
