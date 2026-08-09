@@ -1,0 +1,44 @@
+# Build products
+/build*/
+/cmake-build*/
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+
+# Local reverse-engineering inputs and cloned references
+/reference/
+/third_party/
+*.apk
+*.apks
+*.aab
+
+# Runtime diagnostics (may contain usernames, server addresses, or tokens)
+/crash*.txt
+/*.log
+/latest-violation.txt
+/latest-packet-violation.txt
+/last-copied-diagnostic.txt
+/media/
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Editor and OS metadata
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
