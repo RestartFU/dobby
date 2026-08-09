@@ -11,6 +11,8 @@ It captures packet violations and raw decode evidence, and can display Bedrock's
 
 ![Packet rejection diagnostic window](media/image.png)
 
+![Entity and player hitbox overlay](media/esp.png)
+
 ## Target
 
 - Minecraft Android `1.26.40.5`

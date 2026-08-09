@@ -31,6 +31,7 @@ CMakeFiles/
 !/media/
 /media/*
 !/media/image.png
+!/media/esp.png
 
 # Credentials and local configuration
 .env
