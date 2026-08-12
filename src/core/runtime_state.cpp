@@ -56,6 +56,7 @@ RuntimeState::RuntimeState()
             .chestEsp = true,
             .oreEsp = true,
             .networkMetricsOverlay = true,
+            .packetTrafficOverlay = true,
     });
     autoPopup_.store(preferences.autoPopup, std::memory_order_relaxed);
     std::uint8_t espMask = 0;
@@ -65,6 +66,8 @@ RuntimeState::RuntimeState()
     dobby_esp_feature_mask.store(espMask, std::memory_order_relaxed);
     networkMetricsOverlay_.store(
             preferences.networkMetricsOverlay, std::memory_order_relaxed);
+    packetTrafficOverlay_.store(
+            preferences.packetTrafficOverlay, std::memory_order_relaxed);
 }
 
 void RuntimeState::setHookStatus(std::string status, bool warningHook, bool streamProbe) {
@@ -192,6 +195,23 @@ bool RuntimeState::toggleNetworkMetricsOverlay() {
             !networkMetricsOverlay(), std::memory_order_relaxed);
 }
 
+bool RuntimeState::packetTrafficOverlay() const {
+    return packetTrafficOverlay_.load(std::memory_order_relaxed);
+}
+
+bool RuntimeState::togglePacketTrafficOverlay() {
+    return !packetTrafficOverlay_.exchange(
+            !packetTrafficOverlay(), std::memory_order_relaxed);
+}
+
+bool RuntimeState::packetTrafficAvailable() const {
+    return packetTrafficAvailable_.load(std::memory_order_relaxed);
+}
+
+void RuntimeState::setPacketTrafficAvailable(bool available) {
+    packetTrafficAvailable_.store(available, std::memory_order_relaxed);
+}
+
 DeveloperPreferences RuntimeState::developerPreferences() const {
     return {
             .autoPopup = autoPopup(),
@@ -199,6 +219,7 @@ DeveloperPreferences RuntimeState::developerPreferences() const {
             .chestEsp = chestEsp(),
             .oreEsp = oreEsp(),
             .networkMetricsOverlay = networkMetricsOverlay(),
+            .packetTrafficOverlay = packetTrafficOverlay(),
     };
 }
 

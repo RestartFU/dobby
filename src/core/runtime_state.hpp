@@ -52,6 +52,10 @@ public:
     void setOreEspAvailable(bool available);
     bool networkMetricsOverlay() const;
     bool toggleNetworkMetricsOverlay();
+    bool packetTrafficOverlay() const;
+    bool togglePacketTrafficOverlay();
+    bool packetTrafficAvailable() const;
+    void setPacketTrafficAvailable(bool available);
     DeveloperPreferences developerPreferences() const;
 
 private:
@@ -67,6 +71,8 @@ private:
     std::atomic_bool chestEspAvailable_{false};
     std::atomic_bool oreEspAvailable_{false};
     std::atomic_bool networkMetricsOverlay_{true};
+    std::atomic_bool packetTrafficOverlay_{true};
+    std::atomic_bool packetTrafficAvailable_{false};
     std::atomic_size_t totalViolations_{0};
 };
 

@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <numeric>
 #include <utility>
 #include <vector>
 
@@ -36,14 +37,23 @@ bool validBounds(const EntityAabb& bounds) {
 }
 
 bool validCamera(const CameraFrame& camera) {
-    if (!finite(camera.position))
+    constexpr float maximumWorldCoordinate = 1.0e8F;
+    if (!finite(camera.position) ||
+        std::fabs(camera.position.x) >= maximumWorldCoordinate ||
+        std::fabs(camera.position.y) >= maximumWorldCoordinate ||
+        std::fabs(camera.position.z) >= maximumWorldCoordinate) {
         return false;
+    }
     const auto finiteMatrix = [](const std::array<float, 16>& matrix) {
         return std::all_of(matrix.begin(), matrix.end(), [](float value) {
             return std::isfinite(value) && std::fabs(value) < 1.0e8F;
         });
     };
+    const float viewMagnitude = std::accumulate(
+            camera.view.begin(), camera.view.end(), 0.0F,
+            [](float total, float value) { return total + std::fabs(value); });
     return finiteMatrix(camera.view) && finiteMatrix(camera.projection) &&
+            viewMagnitude > 0.01F &&
             std::fabs(camera.projection[0]) > 0.0001F &&
             std::fabs(camera.projection[5]) > 0.0001F;
 }
@@ -172,6 +182,22 @@ bool projectWorldSegment(
             width, height, firstOutput, secondOutput, nearPlaneClipped);
 }
 
+bool worldPointWithinViewport(
+        const CameraFrame& camera, const Vec3f& world,
+        float normalizedMargin) {
+    if (!validCamera(camera) || !finite(world) ||
+        !std::isfinite(normalizedMargin) || normalizedMargin < 1.0F) {
+        return false;
+    }
+    const auto clip = worldToClip(camera, world);
+    if (!finiteClip(clip) || clip[3] < kNearPlane)
+        return false;
+    const float horizontal = std::fabs(clip[0] / clip[3]);
+    const float vertical = std::fabs(clip[1] / clip[3]);
+    return std::isfinite(horizontal) && std::isfinite(vertical) &&
+            horizontal <= normalizedMargin && vertical <= normalizedMargin;
+}
+
 bool shouldUseCompactEspMarker(float widthPixels, float heightPixels) {
     return std::isfinite(widthPixels) && std::isfinite(heightPixels) &&
             widthPixels >= 0.0F && heightPixels >= 0.0F &&
@@ -180,10 +206,10 @@ bool shouldUseCompactEspMarker(float widthPixels, float heightPixels) {
 }
 
 HitboxFrameSubmission submitEntityHitboxFrame(
-        const void* levelIdentity, const CameraFrame& camera,
+        const void* levelIdentity,
         std::span<const EntityHitboxObservation> observations) {
     HitboxFrameSubmission result{};
-    if (levelIdentity == nullptr || !validCamera(camera)) {
+    if (levelIdentity == nullptr) {
         result.invalid = observations.size();
         return result;
     }
@@ -208,9 +234,6 @@ HitboxFrameSubmission submitEntityHitboxFrame(
         capturedBoxes.push_back({observation.bounds, frame});
         ++result.accepted;
     }
-    latestCamera = camera;
-    latestCameraLevel = level;
-    latestCameraFrame = frame;
     return result;
 }
 
@@ -229,6 +252,8 @@ bool currentOverlayCamera(
         std::uint64_t currentFrame, const void*& levelIdentity,
         CameraFrame& camera, std::uint64_t* missedFrames) {
     std::lock_guard lock(captureMutex);
+    if (missedFrames != nullptr)
+        *missedFrames = 0;
     if (latestCameraLevel == 0 || currentFrame < latestCameraFrame)
         return false;
     if (missedFrames != nullptr)
@@ -257,11 +282,15 @@ bool entityHitboxObservedForPresentation(
 
 #include "core/runtime_state.hpp"
 #include "hooks/network_metrics_hook.hpp"
+#include "hooks/ore_esp_scanner.hpp"
+#include "hooks/overlay_camera_hook.hpp"
 #include "metrics/client_performance.hpp"
 #include "metrics/network_metrics.hpp"
+#include "metrics/packet_traffic.hpp"
 #include "platform/launcher.hpp"
 #include "platform/log.hpp"
 #include "ui/network_metrics_overlay.hpp"
+#include "ui/packet_traffic_overlay.hpp"
 
 #include <GLES2/gl2.h>
 
@@ -327,6 +356,7 @@ std::atomic_bool chestPresentationLogged{false};
 std::atomic_bool chestLevelMismatchLogged{false};
 std::atomic_bool orePresentationLogged{false};
 std::atomic_bool oreLevelMismatchLogged{false};
+std::atomic_bool oreCameraStale{false};
 std::atomic_bool nearPlaneClipLogged{false};
 std::atomic_bool synchronizedCameraLogged{false};
 std::atomic_bool captureGapActive{false};
@@ -496,7 +526,10 @@ void drawLines(const float* vertices, std::size_t floatCount,
 void drawEntityHitboxes(void*, void* display, void* surface) {
     const bool espEnabled = runtimeState().anyEspEnabled();
     const bool metricsEnabled = runtimeState().networkMetricsOverlay();
-    if (!espEnabled && !metricsEnabled)
+    const bool packetTrafficEnabled = runtimeState().packetTrafficOverlay() &&
+            runtimeState().packetTrafficAvailable() &&
+            clientWorldRecentlyRendered();
+    if (!espEnabled && !metricsEnabled && !packetTrafficEnabled)
         return;
 
     const bool showHitboxes = runtimeState().entityHitboxes();
@@ -508,6 +541,8 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
             ? currentNetworkMetrics() : NetworkMetricsSnapshot{};
     const ClientPerformanceSnapshot performance = metricsEnabled
             ? captureClientPerformance() : ClientPerformanceSnapshot{};
+    const PacketTrafficSnapshot packetTraffic = packetTrafficEnabled
+            ? currentPacketTraffic() : PacketTrafficSnapshot{};
     thread_local std::vector<CapturedBox> boxes;
     boxes.clear();
     boxes.reserve(kMaximumBoxesPerFrame);
@@ -534,6 +569,18 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
             (showHitboxes || showChests || showOres) && currentOverlayCamera(
                     currentFrame, cameraLevel, overlayCamera,
                     &missedCameraFrames);
+    if (showOres && !currentCameraAvailable &&
+        !oreCameraStale.exchange(true, std::memory_order_acq_rel)) {
+        char message[144]{};
+        std::snprintf(
+                message, sizeof(message),
+                "ore ESP state: camera unavailable (snapshot age=%llu frame(s))",
+                static_cast<unsigned long long>(missedCameraFrames));
+        logLine(message);
+    } else if (showOres && currentCameraAvailable &&
+               oreCameraStale.exchange(false, std::memory_order_acq_rel)) {
+        logLine("ore ESP state: camera capture recovered");
+    }
     if (currentCameraAvailable && missedCameraFrames > 1 &&
         !captureGapActive.exchange(true, std::memory_order_acq_rel)) {
         char message[144]{};
@@ -542,7 +589,7 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
                 "entity overlay: retaining snapshot across %llu missed "
                 "render-camera frame(s)",
                 static_cast<unsigned long long>(missedCameraFrames - 1));
-        logLine(message);
+        verboseLine(message);
     } else if (!currentCameraAvailable &&
                missedCameraFrames > kMaximumMissedEntityPresentationFrames &&
                !cameraExpiredLogged.exchange(true, std::memory_order_acq_rel)) {
@@ -552,10 +599,10 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
                 "ERROR: entity overlay expired after %llu frame(s) without "
                 "a render-camera callback",
                 static_cast<unsigned long long>(missedCameraFrames - 1));
-        logLine(message);
+        verboseLine(message);
     } else if (currentCameraAvailable && missedCameraFrames <= 1 &&
                captureGapActive.exchange(false, std::memory_order_acq_rel)) {
-        logLine("entity overlay: render-camera capture recovered");
+        verboseLine("entity overlay: render-camera capture recovered");
         cameraExpiredLogged.store(false, std::memory_order_release);
     }
     if (!showHitboxes || !currentCameraAvailable ||
@@ -586,10 +633,31 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
             logLine(message);
         }
     }
-    std::vector<OreEspObservation> ores;
+    thread_local std::vector<OreEspObservation> cachedOres;
+    thread_local const void* cachedOreLevel = nullptr;
+    thread_local Vec3f cachedOreCameraPosition{};
+    thread_local std::uint64_t cachedOreFrame = 0;
+    std::span<const OreEspObservation> ores;
     if (showOres && currentCameraAvailable) {
-        ores = snapshotClientKnownOres(
-                cameraLevel, overlayCamera, kMaximumOresPerFrame);
+        processClientOreRescan(cameraLevel, overlayCamera.position);
+        const Vec3f movement = subtract(
+                overlayCamera.position, cachedOreCameraPosition);
+        const float movementSquared = movement.x * movement.x +
+                movement.y * movement.y + movement.z * movement.z;
+        constexpr std::uint64_t refreshIntervalFrames = 6;
+        constexpr float immediateRefreshDistanceSquared = 64.0F;
+        const bool refreshSnapshot = cachedOreLevel != cameraLevel ||
+                currentFrame < cachedOreFrame ||
+                currentFrame - cachedOreFrame >= refreshIntervalFrames ||
+                movementSquared >= immediateRefreshDistanceSquared;
+        if (refreshSnapshot) {
+            cachedOres = snapshotClientKnownOres(
+                    cameraLevel, overlayCamera, kMaximumOresPerFrame);
+            cachedOreLevel = cameraLevel;
+            cachedOreCameraPosition = overlayCamera.position;
+            cachedOreFrame = currentFrame;
+        }
+        ores = cachedOres;
         if (!ores.empty() && !orePresentationLogged.exchange(
                                      true, std::memory_order_acq_rel)) {
             char message[128]{};
@@ -599,13 +667,14 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
                     ores.size());
             logLine(message);
         } else if (ores.empty() && clientKnownOreCount() != 0 &&
+                   clientKnownOreCountForLevel(cameraLevel) == 0 &&
                    !oreLevelMismatchLogged.exchange(
                            true, std::memory_order_acq_rel)) {
             char message[192]{};
             std::snprintf(
                     message, sizeof(message),
                     "ERROR: ore ESP level mismatch: registry=%zu "
-                    "camera_level=%zu",
+                    "active_level=%zu",
                     clientKnownOreCount(),
                     clientKnownOreCountForLevel(cameraLevel));
             logLine(message);
@@ -634,8 +703,12 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
         return;
     const NetworkMetricsGeometry metricsGeometry =
             buildNetworkMetricsGeometry(metrics, width, height, performance);
+    const PacketTrafficGeometry packetTrafficGeometry = packetTrafficEnabled
+            ? buildPacketTrafficGeometry(packetTraffic, width, height)
+            : PacketTrafficGeometry{};
     if (boxes.empty() && chests.empty() && ores.empty() &&
-        metricsGeometry.shadowVertices.empty())
+        metricsGeometry.shadowVertices.empty() &&
+        packetTrafficGeometry.shadowVertices.empty())
         return;
 
     if (boxes.size() > largestBatchLogged && batchSamplesLogged < 8) {
@@ -937,6 +1010,20 @@ void drawEntityHitboxes(void*, void* display, void* surface) {
                   metricsGeometry.memoryVertices.size(),
                   0.8F, 0.65F, 1.0F, 1.0F,
                   metricsGeometry.lineWidth);
+    }
+    if (!packetTrafficGeometry.shadowVertices.empty()) {
+        drawLines(packetTrafficGeometry.shadowVertices.data(),
+                  packetTrafficGeometry.shadowVertices.size(),
+                  0.0F, 0.0F, 0.0F, 0.92F,
+                  packetTrafficGeometry.lineWidth + 2.0F);
+        drawLines(packetTrafficGeometry.incomingVertices.data(),
+                  packetTrafficGeometry.incomingVertices.size(),
+                  0.35F, 0.9F, 1.0F, 1.0F,
+                  packetTrafficGeometry.lineWidth);
+        drawLines(packetTrafficGeometry.outgoingVertices.data(),
+                  packetTrafficGeometry.outgoingVertices.size(),
+                  1.0F, 0.72F, 0.3F, 1.0F,
+                  packetTrafficGeometry.lineWidth);
     }
     const GLenum drawError = gl.getError();
 

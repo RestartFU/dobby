@@ -6,8 +6,6 @@
 #include "core/runtime_state.hpp"
 #include "hooks/minecraft_image.hpp"
 #include "hooks/network_metrics_hook.hpp"
-#include "hooks/overlay_camera_hook.hpp"
-#include "hooks/render_camera.hpp"
 #include "platform/launcher.hpp"
 #include "platform/log.hpp"
 #include "ui/entity_hitbox_overlay.hpp"
@@ -187,14 +185,10 @@ extern "C" void dobby_capture_entity_hitbox(
             actor, target::kActorLevelOffset);
     if (runtimeState().networkMetricsOverlay())
         observeClientLevelForMetrics(level);
-    rememberOverlayLevelIdentity(level);
     const std::uint64_t presentation = entityHitboxPresentationFrame();
     if (lastBatchCaptureFrame.load(std::memory_order_acquire) == presentation)
         return;
 
-    CameraFrame frame{};
-    if (!captureRenderCameraFrame(renderContext, frame))
-        return;
     if (lastBatchCaptureFrame.exchange(
                 presentation, std::memory_order_acq_rel) == presentation) {
         return;
@@ -205,7 +199,7 @@ extern "C" void dobby_capture_entity_hitbox(
             ? captureRuntimeEntities(level, actorCount, playerCount)
             : std::span<const EntityHitboxObservation>{};
     const HitboxFrameSubmission result = submitEntityHitboxFrame(
-            level, frame, observations);
+            level, observations);
     if (result.invalid != 0 &&
         !invalidBoundsLogged.exchange(true, std::memory_order_acq_rel)) {
         logLine("ERROR: entity overlay rejected invalid client bounds");
@@ -217,21 +211,15 @@ extern "C" void dobby_capture_entity_hitbox(
     if (!observations.empty() &&
         !batchCaptureLogged.exchange(true, std::memory_order_acq_rel)) {
         const EntityAabb& bounds = observations.front().bounds;
-        char message[768]{};
+        char message[512]{};
         std::snprintf(
                 message, sizeof(message),
                 "entity batch sample: accepted=%zu actors=%zu players=%zu "
                 "bounds=(%.3f,%.3f,%.3f)->"
-                "(%.3f,%.3f,%.3f) camera=(%.3f,%.3f,%.3f) "
-                "view_diag=(%.3f,%.3f,%.3f,%.3f) "
-                "projection_diag=(%.3f,%.3f,%.3f,%.3f)",
+                "(%.3f,%.3f,%.3f)",
                 result.accepted, actorCount, playerCount,
                 bounds.minimum.x, bounds.minimum.y, bounds.minimum.z,
-                bounds.maximum.x, bounds.maximum.y, bounds.maximum.z,
-                frame.position.x, frame.position.y, frame.position.z,
-                frame.view[0], frame.view[5], frame.view[10], frame.view[15],
-                frame.projection[0], frame.projection[5],
-                frame.projection[10], frame.projection[15]);
+                bounds.maximum.x, bounds.maximum.y, bounds.maximum.z);
         logLine(message);
     }
 }
@@ -311,8 +299,7 @@ void installEntityHitboxHook() {
             matchesSignature(reinterpret_cast<const void*>(forEachPlayerAddress),
                              target::kLevelForEachPlayerSignature) &&
             matchesSignature(reinterpret_cast<const void*>(primaryLocalPlayerAddress),
-                             target::kLevelGetPrimaryLocalPlayerSignature) &&
-            configureRenderCameraCapture(image);
+                             target::kLevelGetPrimaryLocalPlayerSignature);
     if (!valid) {
         runtimeState().setEntityHitboxesAvailable(false);
         logLine("ERROR: entity overlay unavailable; Bedrock render layout mismatch");

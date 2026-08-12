@@ -3,6 +3,7 @@
 #include "hooks/chunk_metrics_hook.hpp"
 #include "hooks/chest_esp_hook.hpp"
 #include "hooks/packet_hooks.hpp"
+#include "hooks/packet_traffic_hook.hpp"
 #include "hooks/entity_hitbox_hook.hpp"
 #include "hooks/network_metrics_hook.hpp"
 #include "hooks/overlay_camera_hook.hpp"
@@ -34,6 +35,7 @@ extern "C" [[gnu::visibility("default")]] void mod_init() {
     dobby::installPacketHooks();
 #if defined(__ANDROID__)
     dobby::installNetworkMetricsHook();
+    dobby::installPacketTrafficHooks();
     dobby::installChunkMetricsHooks();
     dobby::installEntityHitboxHook();
     dobby::installOverlayCameraHook();

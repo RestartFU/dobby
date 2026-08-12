@@ -6,7 +6,7 @@
 
 namespace dobby {
 
-inline constexpr char kDobbyVersion[] = "2.9.0";
+inline constexpr char kDobbyVersion[] = "2.10.0";
 inline constexpr char kMinecraftVersion[] = "1.26.40.5";
 inline constexpr char kMinecraftBuildId[] = "5893edc8d56c93cbdb50e0f9436320236b78c89d";
 inline constexpr char kAbi[] = "arm64-v8a";
@@ -242,6 +242,22 @@ inline constexpr std::array<std::uint8_t, 16> kRakNetPeerUpdateSignature{
 inline constexpr std::ptrdiff_t kRakNetPeerLastPingOffset = 0x104;
 inline constexpr std::ptrdiff_t kRakNetPeerAveragePingOffset = 0x108;
 
+// NetworkSystem owns a concrete PacketObserver for every serialized packet.
+// These two active slots expose the Packet and Bedrock-observed byte count
+// without changing, delaying, or replacing network data.
+inline constexpr std::uintptr_t kPacketObserverVtableOffset = 0x120a5148;
+inline constexpr std::uintptr_t kPacketSentToOffset = 0x0c2a0548;
+inline constexpr std::uintptr_t kPacketSentToVtableSlotOffset = 0x120a5158;
+inline constexpr std::array<std::uint8_t, 16> kPacketSentToSignature{
+        0xfd, 0x7b, 0xbe, 0xa9, 0xf3, 0x0b, 0x00, 0xf9,
+        0xfd, 0x03, 0x00, 0x91, 0x20, 0x04, 0x00, 0x0f};
+inline constexpr std::uintptr_t kPacketReceivedFromOffset = 0x0c2a058c;
+inline constexpr std::uintptr_t kPacketReceivedFromVtableSlotOffset = 0x120a5160;
+inline constexpr std::array<std::uint8_t, 16> kPacketReceivedFromSignature{
+        0xfd, 0x7b, 0xbe, 0xa9, 0xf3, 0x0b, 0x00, 0xf9,
+        0xfd, 0x03, 0x00, 0x91, 0x20, 0x04, 0x00, 0x0f};
+inline constexpr std::size_t kPacketGetIdVtableSlot = 2;
+
 // Runtime packet dispatchers are used after Bedrock's generated schemas have
 // been cached. Their shared_ptr argument contains the fully decoded packet.
 inline constexpr std::uintptr_t kLevelChunkDispatcherOffset = 0x0c2b88e4;
@@ -261,6 +277,59 @@ inline constexpr std::array<std::uint8_t, 16>
         kLevelRenderFrameSignature{
                 0xff, 0x83, 0x02, 0xd1, 0xfd, 0x7b, 0x06, 0xa9,
                 0xf8, 0x5f, 0x07, 0xa9, 0xf6, 0x57, 0x08, 0xa9};
+inline constexpr std::uintptr_t kLevelRendererPlayerVtableOffset =
+        0x11fbe270;
+
+// The Android implementation reads the live mce::Camera* directly from its
+// BaseActorRenderContext argument at x1 + 0x18 before copying three
+// MatrixStacks. Generated Windows headers are not ABI evidence for this
+// Android libc++ object layout, so the target instructions are validated.
+inline constexpr std::ptrdiff_t kLevelRenderCameraPointerOffset = 0x18;
+inline constexpr std::uintptr_t kLevelRenderCameraPointerProbeOffset =
+        0x0ae1a1bc;
+inline constexpr std::array<std::uint8_t, 16>
+        kLevelRenderCameraPointerProbeSignature{
+                0xc0, 0x0e, 0x40, 0xf9, 0xbb, 0xb6, 0x66, 0x95,
+                0x68, 0xc2, 0x44, 0xf9, 0xd8, 0x0e, 0x40, 0xf9};
+
+// Capture only after Bedrock refreshes the Camera from the render context.
+// At this point x19 is the renderer, x22 is BaseActorRenderContext, and x21
+// is ViewRenderObject. All four overwritten instructions are replayable.
+inline constexpr std::uintptr_t kLevelRenderCameraCaptureOffset =
+        0x0ae1a1c4;
+inline constexpr std::array<std::uint8_t, 16>
+        kLevelRenderCameraCaptureSignature{
+                0x68, 0xc2, 0x44, 0xf9, 0xd8, 0x0e, 0x40, 0xf9,
+                0x74, 0x22, 0x1c, 0x91, 0x17, 0xe5, 0x41, 0xf9};
+
+// The main render path subtracts this exact renderer-owned Vec3 from world
+// coordinates. This is the target-proven world-camera position used by the
+// level renderer, independent of generated cross-platform object headers.
+inline constexpr std::ptrdiff_t kLevelRendererCameraPositionOffset = 0x6f4;
+inline constexpr std::uintptr_t kLevelRendererCameraPositionUseProbeOffset =
+        0x0ae0ad30;
+inline constexpr std::array<std::uint8_t, 16>
+        kLevelRendererCameraPositionUseProbeSignature{
+                0x01, 0x08, 0x40, 0x2d, 0x60, 0xf6, 0x46, 0xbd,
+                0x63, 0xfa, 0x46, 0xbd, 0x64, 0xfe, 0x46, 0xbd};
+
+// LevelRendererCamera's constructor receives Level& in x2, preserves it in
+// x22, and stores it at +0x958. Validate both that exact store and an
+// independent load-plus-Level-virtual-call before enabling capture.
+inline constexpr std::ptrdiff_t kLevelRendererLevelOffset = 0x958;
+inline constexpr std::uintptr_t kLevelRendererLevelLayoutProbeOffset =
+        0x0ae2354c;
+inline constexpr std::array<std::uint8_t, 16>
+        kLevelRendererLevelLayoutProbeSignature{
+                0x76, 0xae, 0x04, 0xf9, 0x76, 0x82, 0x25, 0x91,
+                0x60, 0x52, 0x82, 0x3d, 0x1f, 0xd1, 0x02, 0xf8};
+inline constexpr std::uintptr_t kLevelRendererLevelUseProbeOffset =
+        0x0ae23c64;
+inline constexpr std::array<std::uint8_t, 16>
+        kLevelRendererLevelUseProbeSignature{
+                0x60, 0xae, 0x44, 0xf9, 0x08, 0x00, 0x40, 0xf9,
+                0x08, 0x35, 0x41, 0xf9, 0x00, 0x01, 0x3f, 0xd6};
+
 inline constexpr std::uintptr_t kLevelChunkVtableOffset = 0x12073298;
 
 inline constexpr std::uintptr_t kSubChunkDispatcherOffset = 0x0c2bb704;

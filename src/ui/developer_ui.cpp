@@ -10,6 +10,7 @@
 #include "hooks/chest_esp_hook.hpp"
 #include "hooks/entity_hitbox_hook.hpp"
 #include "hooks/ore_esp_scanner.hpp"
+#include "hooks/packet_traffic_hook.hpp"
 #include "network/packet_names.hpp"
 #include "platform/files.hpp"
 #include "platform/launcher.hpp"
@@ -31,6 +32,7 @@ bool entityHitboxesSelected(void*) { return runtimeState().entityHitboxes(); }
 bool chestEspSelected(void*) { return runtimeState().chestEsp(); }
 bool oreEspSelected(void*) { return runtimeState().oreEsp(); }
 bool networkMetricsSelected(void*) { return runtimeState().networkMetricsOverlay(); }
+bool packetTrafficSelected(void*) { return runtimeState().packetTrafficOverlay(); }
 
 void windowClosed(void*) { verboseLine("developer window closed"); }
 
@@ -106,6 +108,8 @@ void toggleOreEsp(void*) {
         return;
     }
     const bool enabled = runtimeState().toggleOreEsp();
+    if (enabled)
+        requestClientOreRescan();
     persistDeveloperPreferences();
     logLine(enabled ? "UI: ore ESP enabled" : "UI: ore ESP disabled");
 }
@@ -115,6 +119,17 @@ void toggleNetworkMetrics(void*) {
     persistDeveloperPreferences();
     logLine(enabled ? "UI: network metrics overlay enabled"
                     : "UI: network metrics overlay disabled");
+}
+
+void togglePacketTraffic(void*) {
+    if (!runtimeState().packetTrafficAvailable()) {
+        logLine("ERROR: packet traffic overlay is unavailable");
+        return;
+    }
+    const bool enabled = runtimeState().togglePacketTrafficOverlay();
+    persistDeveloperPreferences();
+    logLine(enabled ? "UI: packet traffic overlay enabled"
+                    : "UI: packet traffic overlay disabled");
 }
 
 } // namespace
@@ -193,8 +208,11 @@ void registerDeveloperUi() {
     runtimeState().setEntityHitboxesAvailable(hitboxesReady);
     const bool chestEspReady = chestEspHookInstalled() && overlayReady;
     runtimeState().setChestEspAvailable(chestEspReady);
-    const bool oreEspReady = oreEspScannerReady() && overlayReady;
+    const bool oreEspReady =
+            chestEspHookInstalled() && oreEspScannerReady() && overlayReady;
     runtimeState().setOreEspAvailable(oreEspReady);
+    const bool packetTrafficReady = packetTrafficHooksInstalled() && overlayReady;
+    runtimeState().setPacketTrafficAvailable(packetTrafficReady);
     if (hitboxesReady)
         logLine(runtimeState().entityHitboxes()
                         ? "entity hitboxes enabled"
@@ -207,6 +225,10 @@ void registerDeveloperUi() {
         logLine(runtimeState().oreEsp()
                         ? "ore ESP enabled"
                         : "ore ESP disabled by saved preference");
+    if (packetTrafficReady)
+        logLine(runtimeState().packetTrafficOverlay()
+                        ? "packet traffic overlay enabled"
+                        : "packet traffic overlay disabled by saved preference");
     logLine(launcherWindowAvailable() ? "UI: launcher window API ready"
                                       : "ERROR: launcher window API unavailable");
     logLine(launcherClipboardAvailable() ? "UI: native clipboard ready"
@@ -216,7 +238,7 @@ void registerDeveloperUi() {
         return;
     }
 
-    static std::array<LauncherMenuEntry, 5> subentries{
+    static std::array<LauncherMenuEntry, 6> subentries{
             LauncherMenuEntry{
                     "Entity hitboxes", nullptr, entityHitboxesSelected, toggleHitboxes, 0, nullptr},
             LauncherMenuEntry{
@@ -226,6 +248,9 @@ void registerDeveloperUi() {
             LauncherMenuEntry{
                     "Network metrics", nullptr, networkMetricsSelected,
                     toggleNetworkMetrics, 0, nullptr},
+            LauncherMenuEntry{
+                    "Packet traffic", nullptr, packetTrafficSelected,
+                    togglePacketTraffic, 0, nullptr},
             LauncherMenuEntry{"Automatic popup", nullptr, autoPopupSelected, toggleAutoPopup, 0, nullptr},
     };
     static LauncherMenuEntry root{

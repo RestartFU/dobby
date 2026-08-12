@@ -11,6 +11,7 @@ struct DeveloperPreferences {
     bool chestEsp{true};
     bool oreEsp{true};
     bool networkMetricsOverlay{true};
+    bool packetTrafficOverlay{true};
 
     bool operator==(const DeveloperPreferences&) const = default;
 };

@@ -16,11 +16,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <optional>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace dobby {
@@ -45,6 +48,9 @@ constexpr std::size_t kMaximumSubChunksPerChunk = 64;
 constexpr std::size_t kMaximumCachedBlockTypes = 32'768;
 constexpr std::size_t kMaximumBlockNameLength = 128;
 constexpr std::size_t kMaximumPaletteEntries = kBlocksPerSubChunk;
+constexpr std::size_t kMaximumTrackedOreChunks = 4'096;
+constexpr std::uint64_t kPeriodicRescanIntervalMicroseconds = 100'000;
+constexpr std::uint64_t kRetryDelayMicroseconds = 250'000;
 
 struct SubChunkRange {
     const std::byte* begin{};
@@ -64,6 +70,12 @@ struct ScanMetrics {
     std::size_t ores{};
 };
 
+enum class ChunkScanResult {
+    success,
+    retryableFailure,
+    registryCapacityReached,
+};
+
 MinecraftImage minecraftImage{};
 GetHashedNameFn getHashedName = nullptr;
 GetHashedStringValueFn getHashedStringValue = nullptr;
@@ -75,6 +87,23 @@ std::atomic_bool firstBlockNameLogged{false};
 std::atomic_bool unreadableBlockNameLogged{false};
 std::atomic_bool scanMetricsLogged{false};
 thread_local const char* lastFailureStage = "not recorded";
+// Schedule ownership changes and their registry cleanup are one transaction.
+// The only nested lock order is rescanMutex -> ChunkOreRegistry's mutex.
+std::mutex rescanMutex;
+OreRescanSchedule rescanSchedule{
+        kMaximumTrackedOreChunks, kPeriodicRescanIntervalMicroseconds};
+bool explicitRescanActive = false;
+std::uint64_t trackedEvents{};
+std::uint64_t dirtyEvents{};
+std::uint64_t evictedTargets{};
+std::uint64_t ignoredStaleDirtyEvents{};
+std::uint64_t recoveredUnloadEvents{};
+std::uint64_t successfulScans{};
+std::uint64_t retriedScans{};
+std::uint64_t capacityFailedScans{};
+std::uint64_t scanMicroseconds{};
+std::uint64_t maximumScanMicroseconds{};
+std::uint64_t nextDiagnosticMicroseconds{};
 
 static_assert(sizeof(ClientSpan<std::uint32_t>) == 2 * sizeof(void*));
 
@@ -114,8 +143,8 @@ bool imageVtable(const void* object) {
 
 void logLayoutFailure() {
     if (!layoutFailureLogged.exchange(true, std::memory_order_acq_rel)) {
-        logLine(std::string("ERROR: ore ESP stopped at ") +
-                lastFailureStage + "; decoded client data was rejected");
+        logLine(std::string("ore ESP: deferred an unstable chunk scan at ") +
+                lastFailureStage + "; previous results were retained");
     }
 }
 
@@ -190,18 +219,18 @@ BlockClassification classifyBlock(const void* block) {
         return {};
     }
     const auto name = readAndroidString(nameObject);
-    if (!name || !validBlockResourceName(*name)) {
+    const auto nameClassification = classifyOreBlockNameForCache(
+            name ? std::optional<std::string_view>{*name} : std::nullopt);
+    if (!nameClassification.cacheable) {
         if (!unreadableBlockNameLogged.exchange(
                     true, std::memory_order_acq_rel)) {
             logLine("ore ESP: skipped an unreadable client block name");
         }
-        if (classifications.size() < kMaximumCachedBlockTypes)
-            classifications.emplace(block, -1);
         return {true, std::nullopt};
     }
     if (!firstBlockNameLogged.exchange(true, std::memory_order_acq_rel))
         logLine("ore ESP: exact client block-name decoding active");
-    const std::optional<OreKind> ore = classifyOreBlockName(*name);
+    const std::optional<OreKind> ore = nameClassification.ore;
     if (classifications.size() < kMaximumCachedBlockTypes) {
         classifications.emplace(
                 block, ore ? static_cast<std::int16_t>(*ore) : -1);
@@ -232,21 +261,25 @@ bool readSubChunkRange(const void* chunk, SubChunkRange& output) {
         lastFailureStage = "LevelChunk pointer validation";
         return false;
     }
-    const void* begin = readObjectField<const void*>(
+    const auto begin = readProcessField<const void*>(
             chunk, target::kLevelChunkSubChunksOffset);
-    const void* end = readObjectField<const void*>(
+    const auto end = readProcessField<const void*>(
             chunk, target::kLevelChunkSubChunksOffset +
                     static_cast<std::ptrdiff_t>(sizeof(void*)));
-    if (begin == nullptr && end == nullptr) {
+    if (!begin || !end) {
+        lastFailureStage = "LevelChunk subchunk-vector readability validation";
+        return false;
+    }
+    if (*begin == nullptr && *end == nullptr) {
         output = {};
         return true;
     }
-    if (!alignedPointer(begin) || !alignedPointer(end)) {
+    if (!alignedPointer(*begin) || !alignedPointer(*end)) {
         lastFailureStage = "LevelChunk subchunk-vector pointer validation";
         return false;
     }
-    const auto beginAddress = reinterpret_cast<std::uintptr_t>(begin);
-    const auto endAddress = reinterpret_cast<std::uintptr_t>(end);
+    const auto beginAddress = reinterpret_cast<std::uintptr_t>(*begin);
+    const auto endAddress = reinterpret_cast<std::uintptr_t>(*end);
     if (endAddress < beginAddress ||
         (endAddress - beginAddress) % target::kSubChunkSize != 0) {
         lastFailureStage = "LevelChunk subchunk-vector bounds validation";
@@ -258,7 +291,7 @@ bool readSubChunkRange(const void* chunk, SubChunkRange& output) {
         lastFailureStage = "LevelChunk subchunk-vector capacity validation";
         return false;
     }
-    output = {static_cast<const std::byte*>(begin), count};
+    output = {static_cast<const std::byte*>(*begin), count};
     return true;
 }
 
@@ -320,24 +353,32 @@ void logScanMetricsOnce(
 }
 
 bool scanSubChunk(
-        const std::byte* subChunk, const void* levelIdentity,
-        ChunkPosition chunk, std::int16_t expectedAbsoluteSubChunk,
-        ScanMetrics& metrics) {
+        const std::byte* subChunk, ChunkPosition chunk,
+        std::int16_t expectedAbsoluteSubChunk, ScanMetrics& metrics,
+        std::vector<OreSubChunkSnapshot>& chunkSnapshot) {
     ++metrics.subChunks;
-    const auto storedAbsoluteSubChunk = readObjectField<std::int8_t>(
+    const auto storedAbsoluteSubChunk = readProcessField<std::int8_t>(
             subChunk, target::kSubChunkAbsoluteIndexOffset);
+    if (!storedAbsoluteSubChunk) {
+        lastFailureStage = "SubChunk absolute-index readability validation";
+        return false;
+    }
     const auto absoluteSubChunk =
-            static_cast<std::int16_t>(storedAbsoluteSubChunk);
+            static_cast<std::int16_t>(*storedAbsoluteSubChunk);
     if (absoluteSubChunk != expectedAbsoluteSubChunk) {
         lastFailureStage = "SubChunk absolute-index validation";
         return false;
     }
 
-    const void* storage = readObjectField<const void*>(
+    const auto storage = readProcessField<const void*>(
             subChunk, target::kSubChunkStandardStorageOffset);
+    if (!storage) {
+        lastFailureStage = "SubChunkStorage pointer readability validation";
+        return false;
+    }
     std::vector<OreBlock> ores;
-    if (storage != nullptr) {
-        const auto* dispatch = storageDispatch(storage);
+    if (*storage != nullptr) {
+        const auto* dispatch = storageDispatch(*storage);
         if (dispatch == nullptr) {
             lastFailureStage = "SubChunkStorage vtable validation";
             return false;
@@ -345,7 +386,7 @@ bool scanSubChunk(
 
         const auto getBitsPerElement = reinterpret_cast<GetBitsPerElementFn>(
                 minecraftImage.base + dispatch->bitsPerElementOffset);
-        const std::size_t bitsPerElement = getBitsPerElement(storage);
+        const std::size_t bitsPerElement = getBitsPerElement(*storage);
         if (bitsPerElement != dispatch->bitsPerElement) {
             lastFailureStage = "SubChunkStorage bit-width validation";
             return false;
@@ -355,7 +396,7 @@ bool scanSubChunk(
         if (bitsPerElement == 0) {
             const auto getElement = reinterpret_cast<GetElementFn>(
                     minecraftImage.base + dispatch->getElementOffset);
-            const void* uniformBlock = getElement(storage, 0);
+            const void* uniformBlock = getElement(*storage, 0);
             if (uniformBlock == nullptr) {
                 lastFailureStage = "uniform SubChunkStorage validation";
                 return false;
@@ -367,7 +408,7 @@ bool scanSubChunk(
                             minecraftImage.base +
                             dispatch->paletteSnapshotOffset);
             if (!copyClientSpan(
-                        getPaletteSnapshot(storage), kMaximumPaletteEntries,
+                        getPaletteSnapshot(*storage), kMaximumPaletteEntries,
                         palette) || palette.empty()) {
                 lastFailureStage = "SubChunkStorage palette validation";
                 return false;
@@ -400,7 +441,7 @@ bool scanSubChunk(
                     reinterpret_cast<GetPackedElementFn>(
                             minecraftImage.base +
                             dispatch->packedElementOffset);
-            const auto packedSource = getPackedElement(storage);
+            const auto packedSource = getPackedElement(*storage);
             if (packedSource.size != *expectedPackedWords) {
                 lastFailureStage =
                         "SubChunkStorage packed-word count validation";
@@ -445,26 +486,76 @@ bool scanSubChunk(
     }
 
     metrics.ores += ores.size();
-    const auto result = replaceClientChunkSubChunkOres(
-            levelIdentity, chunk, absoluteSubChunk, ores);
-    if (result == ChunkOreUpdateResult::invalidInput) {
+    chunkSnapshot.push_back({absoluteSubChunk, std::move(ores)});
+    return true;
+}
+
+std::uint64_t monotonicMicroseconds() {
+    return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+}
+
+ChunkScanResult scanClientChunkOres(
+        const void* chunk, const void* levelIdentity,
+        ChunkPosition position) {
+    if (!oreEspScannerReady() || levelIdentity == nullptr ||
+        !validChunkPosition(position)) {
+        return ChunkScanResult::retryableFailure;
+    }
+    const auto started = std::chrono::steady_clock::now();
+    ScanMetrics metrics{};
+    lastFailureStage = "not recorded";
+    SubChunkRange range{};
+    if (!readSubChunkRange(chunk, range)) {
+        logLayoutFailure();
+        return ChunkScanResult::retryableFailure;
+    }
+    std::vector<OreSubChunkSnapshot> chunkSnapshot;
+    chunkSnapshot.reserve(range.count);
+    for (std::size_t index = 0; index < range.count; ++index) {
+        const auto* subChunk = range.begin + index * target::kSubChunkSize;
+        const auto storedAbsolute = readProcessField<std::int8_t>(
+                subChunk, target::kSubChunkAbsoluteIndexOffset);
+        if (!storedAbsolute) {
+            lastFailureStage =
+                    "SubChunk absolute-index readability validation";
+            logLayoutFailure();
+            return ChunkScanResult::retryableFailure;
+        }
+        const auto absolute = static_cast<std::int16_t>(*storedAbsolute);
+        if (!scanSubChunk(
+                    subChunk, position, absolute, metrics, chunkSnapshot)) {
+            logScanMetricsOnce(
+                    metrics, std::chrono::steady_clock::now() - started);
+            logLayoutFailure();
+            return ChunkScanResult::retryableFailure;
+        }
+    }
+    const auto update = replaceClientChunkOres(
+            levelIdentity, position, chunkSnapshot);
+    if (update == ChunkOreUpdateResult::invalidInput) {
         lastFailureStage = "ore registry input validation";
-        return false;
+        logLayoutFailure();
+        return ChunkScanResult::retryableFailure;
     }
-    if (result != ChunkOreUpdateResult::accepted) {
+    if (update != ChunkOreUpdateResult::accepted) {
         logCapacityFailure();
-        return true;
+        return ChunkScanResult::registryCapacityReached;
     }
-    if (!ores.empty() &&
+    logScanMetricsOnce(
+            metrics, std::chrono::steady_clock::now() - started);
+    if (metrics.ores != 0 &&
         !firstOreLogged.exchange(true, std::memory_order_acq_rel)) {
         char message[160]{};
         std::snprintf(
                 message, sizeof(message),
                 "ore ESP: client decoded %zu ore block(s) in chunk (%d,%d)",
-                ores.size(), chunk.x, chunk.z);
+                metrics.ores, position.x, position.z);
         logLine(message);
     }
-    return true;
+    return ChunkScanResult::success;
 }
 
 bool validateScannerTargets(const MinecraftImage& image) {
@@ -548,82 +639,201 @@ bool oreEspScannerReady() {
     return ready.load(std::memory_order_acquire);
 }
 
-void scanClientChunkOres(
-        const void* chunk, const void* levelIdentity, ChunkPosition position) {
-    if (!oreEspScannerReady() || levelIdentity == nullptr ||
-        !validChunkPosition(position)) {
+void trackClientChunkForOreEsp(
+        const void* chunk, const void* levelIdentity,
+        ChunkPosition position) {
+    if (!oreEspScannerReady())
         return;
-    }
-    const auto started = std::chrono::steady_clock::now();
-    ScanMetrics metrics{};
-    lastFailureStage = "not recorded";
-    SubChunkRange range{};
-    if (!readSubChunkRange(chunk, range)) {
-        logLayoutFailure();
-        return;
-    }
-    removeClientChunkOres(levelIdentity, position);
-    for (std::size_t index = 0; index < range.count; ++index) {
-        const auto* subChunk = range.begin + index * target::kSubChunkSize;
-        const auto absolute = static_cast<std::int16_t>(
-                readObjectField<std::int8_t>(
-                        subChunk, target::kSubChunkAbsoluteIndexOffset));
-        if (!scanSubChunk(
-                    subChunk, levelIdentity, position, absolute, metrics)) {
-            logScanMetricsOnce(
-                    metrics, std::chrono::steady_clock::now() - started);
-            logLayoutFailure();
-            ready.store(false, std::memory_order_release);
-            runtimeState().setOreEspAvailable(false);
+    std::optional<OreChunkScanTarget> evicted;
+    {
+        std::lock_guard lock(rescanMutex);
+        const auto result = rescanSchedule.track(
+                {chunk, levelIdentity, position}, &evicted);
+        if (result == OreChunkTrackResult::invalidInput ||
+            result == OreChunkTrackResult::capacityReached) {
             return;
         }
+        ++trackedEvents;
+        if (result == OreChunkTrackResult::acceptedWithEviction)
+            ++evictedTargets;
+        if (evicted)
+            removeClientChunkOres(evicted->level, evicted->position);
     }
-    logScanMetricsOnce(
-            metrics, std::chrono::steady_clock::now() - started);
 }
 
-void scanClientSubChunkOres(
-        const void* chunk, const void* levelIdentity, ChunkPosition position,
-        std::int16_t absoluteSubChunk) {
-    if (!oreEspScannerReady() || levelIdentity == nullptr ||
-        !validChunkPosition(position)) {
+void dirtyClientChunkForOreEsp(
+        const void* chunk, const void* levelIdentity,
+        ChunkPosition position) {
+    if (!oreEspScannerReady())
         return;
+    std::optional<OreChunkScanTarget> evicted;
+    {
+        std::lock_guard lock(rescanMutex);
+        const OreChunkScanTarget target{chunk, levelIdentity, position};
+        const auto result = rescanSchedule.trackIfAbsent(target, &evicted);
+        if (result == OreChunkTrackResult::invalidInput ||
+            result == OreChunkTrackResult::capacityReached) {
+            return;
+        }
+        if (result == OreChunkTrackResult::existingOwner) {
+            ++ignoredStaleDirtyEvents;
+            return;
+        }
+        if (!rescanSchedule.markDirty(target))
+            return;
+        ++dirtyEvents;
+        if (result == OreChunkTrackResult::acceptedWithEviction)
+            ++evictedTargets;
+        if (evicted)
+            removeClientChunkOres(evicted->level, evicted->position);
     }
-    const auto started = std::chrono::steady_clock::now();
-    ScanMetrics metrics{};
-    lastFailureStage = "not recorded";
-    SubChunkRange range{};
-    if (!readSubChunkRange(chunk, range)) {
-        logLayoutFailure();
+}
+
+void untrackClientChunkForOreEsp(
+        const void* chunk, const void* levelIdentity,
+        ChunkPosition position) {
+    bool removed = false;
+    {
+        std::lock_guard lock(rescanMutex);
+        removed = rescanSchedule.remove(
+                {chunk, levelIdentity, position});
+        if (removed)
+            removeClientChunkOres(levelIdentity, position);
+    }
+}
+
+std::optional<OreChunkScanTarget> untrackClientChunkForOreEsp(
+        const void* chunk) {
+    std::lock_guard lock(rescanMutex);
+    auto removed = rescanSchedule.removeByChunk(chunk);
+    if (removed) {
+        removeClientChunkOres(removed->level, removed->position);
+        ++recoveredUnloadEvents;
+    }
+    return removed;
+}
+
+void requestClientOreRescan() {
+    std::size_t tracked = 0;
+    {
+        std::lock_guard lock(rescanMutex);
+        rescanSchedule.requestFullRescan();
+        tracked = rescanSchedule.size();
+        explicitRescanActive = true;
+    }
+    char message[128]{};
+    std::snprintf(
+            message, sizeof(message),
+            "ore ESP: refreshing %zu loaded chunk(s) nearest-first", tracked);
+    logLine(message);
+}
+
+void processClientOreRescan(
+        const void* levelIdentity, Vec3f cameraPosition) {
+    if (!oreEspScannerReady() || levelIdentity == nullptr)
         return;
-    }
-    const auto* match = static_cast<const std::byte*>(nullptr);
-    for (std::size_t index = 0; index < range.count; ++index) {
-        const auto* candidate = range.begin + index * target::kSubChunkSize;
-        const auto absolute = static_cast<std::int16_t>(
-                readObjectField<std::int8_t>(
-                        candidate, target::kSubChunkAbsoluteIndexOffset));
-        if (absolute == absoluteSubChunk) {
-            match = candidate;
-            break;
+    bool completedExplicitRescan = false;
+    bool writeDiagnostic = false;
+    std::size_t tracked = 0;
+    std::size_t active = 0;
+    std::size_t pending = 0;
+    std::uint64_t diagnosticSuccessfulScans = 0;
+    std::uint64_t diagnosticRetriedScans = 0;
+    std::uint64_t diagnosticCapacityFailures = 0;
+    std::uint64_t diagnosticEvictions = 0;
+    std::uint64_t diagnosticIgnoredStaleDirties = 0;
+    std::uint64_t diagnosticRecoveredUnloads = 0;
+    std::uint64_t diagnosticTrackedEvents = 0;
+    std::uint64_t diagnosticDirtyEvents = 0;
+    std::uint64_t diagnosticScanMicroseconds = 0;
+    std::uint64_t diagnosticMaximumScanMicroseconds = 0;
+    {
+        // Unload removes the target under the same mutex before Bedrock may
+        // release it, so the native chunk remains alive for this bounded scan.
+        std::lock_guard lock(rescanMutex);
+        const std::uint64_t now = monotonicMicroseconds();
+        const auto target = rescanSchedule.selectNext(
+                levelIdentity, cameraPosition, now);
+        if (target) {
+            const std::uint64_t scanStarted = monotonicMicroseconds();
+            const ChunkScanResult result = scanClientChunkOres(
+                    target->chunk, target->level, target->position);
+            const std::uint64_t scanFinished = monotonicMicroseconds();
+            const std::uint64_t elapsed = scanFinished >= scanStarted
+                    ? scanFinished - scanStarted
+                    : 0;
+            scanMicroseconds += elapsed;
+            maximumScanMicroseconds =
+                    std::max(maximumScanMicroseconds, elapsed);
+            if (result == ChunkScanResult::success) {
+                rescanSchedule.markScanned(*target, scanFinished);
+                ++successfulScans;
+            } else {
+                static_cast<void>(rescanSchedule.markRetry(
+                        *target, scanFinished, kRetryDelayMicroseconds));
+                if (result == ChunkScanResult::registryCapacityReached)
+                    ++capacityFailedScans;
+                else
+                    ++retriedScans;
+            }
+        }
+        if (explicitRescanActive &&
+            rescanSchedule.pendingForLevel(levelIdentity) == 0) {
+            explicitRescanActive = false;
+            completedExplicitRescan = true;
+        }
+        if (now >= nextDiagnosticMicroseconds) {
+            constexpr std::uint64_t interval = 5'000'000;
+            nextDiagnosticMicroseconds =
+                    now > std::numeric_limits<std::uint64_t>::max() - interval
+                    ? std::numeric_limits<std::uint64_t>::max()
+                    : now + interval;
+            tracked = rescanSchedule.size();
+            active = rescanSchedule.sizeForLevel(levelIdentity);
+            pending = rescanSchedule.pendingForLevel(levelIdentity);
+            diagnosticSuccessfulScans = successfulScans;
+            diagnosticRetriedScans = retriedScans;
+            diagnosticCapacityFailures = capacityFailedScans;
+            diagnosticEvictions = evictedTargets;
+            diagnosticIgnoredStaleDirties = ignoredStaleDirtyEvents;
+            diagnosticRecoveredUnloads = recoveredUnloadEvents;
+            diagnosticTrackedEvents = trackedEvents;
+            diagnosticDirtyEvents = dirtyEvents;
+            diagnosticScanMicroseconds = scanMicroseconds;
+            diagnosticMaximumScanMicroseconds = maximumScanMicroseconds;
+            writeDiagnostic = true;
         }
     }
-    if (match == nullptr) {
-        static_cast<void>(replaceClientChunkSubChunkOres(
-                levelIdentity, position, absoluteSubChunk, {}));
-        return;
+    if (completedExplicitRescan)
+        logLine("ore ESP: loaded-chunk refresh complete");
+    if (writeDiagnostic) {
+        const std::size_t registryChunks =
+                clientKnownOreChunkCountForLevel(levelIdentity);
+        const std::size_t registryOres =
+                clientKnownOreCountForLevel(levelIdentity);
+        char message[448]{};
+        std::snprintf(
+                message, sizeof(message),
+                "ore ESP pipeline: tracked=%zu active=%zu pending=%zu "
+                "registry_chunks=%zu ores=%zu scans=%llu retries=%llu "
+                "capacity_failures=%llu evictions=%llu loads=%llu "
+                "dirties=%llu stale_dirties=%llu recovered_unloads=%llu "
+                "scan_us=%llu max_scan_us=%llu",
+                tracked, active, pending, registryChunks, registryOres,
+                static_cast<unsigned long long>(diagnosticSuccessfulScans),
+                static_cast<unsigned long long>(diagnosticRetriedScans),
+                static_cast<unsigned long long>(diagnosticCapacityFailures),
+                static_cast<unsigned long long>(diagnosticEvictions),
+                static_cast<unsigned long long>(diagnosticTrackedEvents),
+                static_cast<unsigned long long>(diagnosticDirtyEvents),
+                static_cast<unsigned long long>(
+                        diagnosticIgnoredStaleDirties),
+                static_cast<unsigned long long>(diagnosticRecoveredUnloads),
+                static_cast<unsigned long long>(diagnosticScanMicroseconds),
+                static_cast<unsigned long long>(
+                        diagnosticMaximumScanMicroseconds));
+        logLine(message);
     }
-    if (!scanSubChunk(
-                match, levelIdentity, position, absoluteSubChunk, metrics)) {
-        logScanMetricsOnce(
-                metrics, std::chrono::steady_clock::now() - started);
-        logLayoutFailure();
-        ready.store(false, std::memory_order_release);
-        runtimeState().setOreEspAvailable(false);
-        return;
-    }
-    logScanMetricsOnce(
-            metrics, std::chrono::steady_clock::now() - started);
 }
 
 } // namespace dobby
@@ -634,10 +844,16 @@ namespace dobby {
 
 bool initializeOreEspScanner(const MinecraftImage&) { return false; }
 bool oreEspScannerReady() { return false; }
-void scanClientChunkOres(
+void trackClientChunkForOreEsp(
         const void*, const void*, ChunkPosition) {}
-void scanClientSubChunkOres(
-        const void*, const void*, ChunkPosition, std::int16_t) {}
+void dirtyClientChunkForOreEsp(
+        const void*, const void*, ChunkPosition) {}
+void untrackClientChunkForOreEsp(
+        const void*, const void*, ChunkPosition) {}
+std::optional<OreChunkScanTarget> untrackClientChunkForOreEsp(
+        const void*) { return std::nullopt; }
+void requestClientOreRescan() {}
+void processClientOreRescan(const void*, Vec3f) {}
 
 } // namespace dobby
 

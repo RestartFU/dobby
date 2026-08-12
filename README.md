@@ -3,17 +3,19 @@
 Compact Minecraft Bedrock developer client for macOS
 [mcpelauncher](https://github.com/minecraft-linux/mcpelauncher-manifest).
 
-It captures packet violations and raw decode evidence, displays entity/player hitboxes, outlines client-known chests and ores, and shows native RakNet and chunk metrics.
+It captures packet violations and raw decode evidence, displays entity/player hitboxes, outlines client-known chests and ores, and shows passive network, chunk, and packet-traffic metrics.
 
 ## In-game diagnostic
 
 `Mods > Dobby` contains the developer overlay. It shows native `PING`, client-observed `TPS~`, loaded chunks and outstanding requests, plus client `FPS` and resident memory use.
 
+The bottom-right packet overlay shows compact incoming/outgoing packet and byte rates plus cumulative traffic formatted in `B`, `KB`, `MB`, `GB`, or `TB`. It appears only while a client world is rendering. `Packet traffic` toggles it independently from the top-right network metrics.
+
 ![Dobby developer metrics overlay](media/debugger.png)
 
 `Chest ESP` outlines chests found in Bedrock's decoded client chunk storage. It does not request or modify world data, so concealed chests appear only if the server actually sent them.
 
-`Ore ESP` scans the same client-decoded subchunk palettes for vanilla ores and ancient debris. It outlines only blocks already present in client memory and never requests or modifies chunk data.
+`Ore ESP` incrementally scans client-decoded subchunk palettes for vanilla ores, ancient debris, and mineral storage blocks. Loaded chunks refresh nearest-first when enabled, while nearby chunks are rechecked for live block changes. It never requests or modifies chunk data.
 
 Menu toggles are saved locally and restored on the next launch.
 

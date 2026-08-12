@@ -59,9 +59,14 @@ bool projectWorldSegment(
         const Vec3f& secondWorld, float width, float height,
         ScreenPoint& firstOutput, ScreenPoint& secondOutput,
         bool& nearPlaneClipped);
+bool worldPointWithinViewport(
+        const CameraFrame& camera, const Vec3f& world,
+        float normalizedMargin = 1.1F);
 bool shouldUseCompactEspMarker(float widthPixels, float heightPixels);
+// Entity capture owns bounds only. The level-render hook is the sole camera
+// producer so secondary actor render passes cannot replace the world view.
 HitboxFrameSubmission submitEntityHitboxFrame(
-        const void* levelIdentity, const CameraFrame& camera,
+        const void* levelIdentity,
         std::span<const EntityHitboxObservation> observations);
 bool submitOverlayCameraFrame(
         const void* levelIdentity, const CameraFrame& camera);

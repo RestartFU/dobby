@@ -19,6 +19,7 @@ namespace dobby {
 namespace {
 
 std::atomic_bool configured{false};
+MinecraftImage configuredImage{};
 
 template <class Value>
 std::optional<Value> readProcessField(
@@ -95,17 +96,42 @@ bool configureRenderCameraCapture(const MinecraftImage& image) {
     const auto projection = image.base + target::kProjectionMatrixGetterOffset;
     const auto view = image.base + target::kViewMatrixGetterOffset;
     const auto position = image.base + target::kCameraPositionGetterOffset;
+    const auto levelLayoutProbe =
+            image.base + target::kLevelRendererLevelLayoutProbeOffset;
+    const auto levelUseProbe =
+            image.base + target::kLevelRendererLevelUseProbeOffset;
+    const auto levelCameraProbe =
+            image.base + target::kLevelRenderCameraPointerProbeOffset;
+    const auto rendererPositionProbe =
+            image.base + target::kLevelRendererCameraPositionUseProbeOffset;
     if (!addressIsExecutable(image, projection) ||
         !addressIsExecutable(image, view) ||
         !addressIsExecutable(image, position) ||
+        !addressIsExecutable(image, levelLayoutProbe) ||
+        !addressIsExecutable(image, levelUseProbe) ||
+        !addressIsExecutable(image, levelCameraProbe) ||
+        !addressIsExecutable(image, rendererPositionProbe) ||
         !matchesSignature(reinterpret_cast<const void*>(projection),
                           target::kProjectionMatrixGetterSignature) ||
         !matchesSignature(reinterpret_cast<const void*>(view),
                           target::kViewMatrixGetterSignature) ||
         !matchesSignature(reinterpret_cast<const void*>(position),
-                          target::kCameraPositionGetterSignature)) {
+                          target::kCameraPositionGetterSignature) ||
+        !matchesSignature(
+                reinterpret_cast<const void*>(levelLayoutProbe),
+                target::kLevelRendererLevelLayoutProbeSignature) ||
+        !matchesSignature(
+                reinterpret_cast<const void*>(levelUseProbe),
+                target::kLevelRendererLevelUseProbeSignature) ||
+        !matchesSignature(
+                reinterpret_cast<const void*>(levelCameraProbe),
+                target::kLevelRenderCameraPointerProbeSignature) ||
+        !matchesSignature(
+                reinterpret_cast<const void*>(rendererPositionProbe),
+                target::kLevelRendererCameraPositionUseProbeSignature)) {
         return false;
     }
+    configuredImage = image;
     configured.store(true, std::memory_order_release);
     return true;
 }
@@ -144,6 +170,79 @@ bool captureRenderCameraFrame(
         !validCameraFrame(captured)) {
         return false;
     }
+    output = captured;
+    return true;
+}
+
+bool captureLevelRenderCameraFrame(
+        const void* levelRenderer, const void* renderContext,
+        const void*& levelIdentity, CameraFrame& output,
+        RenderCameraCaptureFailure& failure) {
+    failure = RenderCameraCaptureFailure::none;
+    levelIdentity = nullptr;
+    if (!configured.load(std::memory_order_acquire)) {
+        failure = RenderCameraCaptureFailure::notConfigured;
+        return false;
+    }
+    if (levelRenderer == nullptr) {
+        failure = RenderCameraCaptureFailure::levelRendererUnavailable;
+        return false;
+    }
+    const auto rendererVtable = readProcessField<std::uintptr_t>(
+            levelRenderer, 0);
+    if (!rendererVtable ||
+        *rendererVtable != configuredImage.base +
+                target::kLevelRendererPlayerVtableOffset) {
+        failure = RenderCameraCaptureFailure::levelRendererUnavailable;
+        return false;
+    }
+    const auto level = readProcessField<const void*>(
+            levelRenderer, target::kLevelRendererLevelOffset);
+    if (!level || *level == nullptr) {
+        failure = RenderCameraCaptureFailure::levelUnavailable;
+        return false;
+    }
+    const auto levelVtable = readProcessField<std::uintptr_t>(*level, 0);
+    if (!levelVtable ||
+        *levelVtable != configuredImage.base + target::kClientLevelVtableOffset) {
+        failure = RenderCameraCaptureFailure::levelUnavailable;
+        return false;
+    }
+    if (renderContext == nullptr) {
+        failure = RenderCameraCaptureFailure::renderContextUnavailable;
+        return false;
+    }
+    const auto position = readProcessField<Vec3f>(
+            levelRenderer, target::kLevelRendererCameraPositionOffset);
+    if (!position) {
+        failure = RenderCameraCaptureFailure::cameraPositionUnavailable;
+        return false;
+    }
+
+    CameraFrame captured{};
+    captured.position = *position;
+    const auto camera = readProcessField<const void*>(
+            renderContext, target::kLevelRenderCameraPointerOffset);
+    if (!camera || *camera == nullptr) {
+        failure = RenderCameraCaptureFailure::cameraUnavailable;
+        return false;
+    }
+    if (!readMatrixStackTop(*camera, captured.view)) {
+        failure = RenderCameraCaptureFailure::viewMatrixUnavailable;
+        return false;
+    }
+    if (!readMatrixStackTop(
+                static_cast<const std::byte*>(*camera) +
+                        target::kCameraProjectionStackOffset,
+                captured.projection)) {
+        failure = RenderCameraCaptureFailure::projectionMatrixUnavailable;
+        return false;
+    }
+    if (!validCameraFrame(captured)) {
+        failure = RenderCameraCaptureFailure::invalidFrame;
+        return false;
+    }
+    levelIdentity = *level;
     output = captured;
     return true;
 }

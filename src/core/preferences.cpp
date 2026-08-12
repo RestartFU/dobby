@@ -50,6 +50,9 @@ DeveloperPreferences parseDeveloperPreferences(
         else if (key == "network_metrics")
             parsed.networkMetricsOverlay = parseBoolean(
                     value, fallback.networkMetricsOverlay);
+        else if (key == "packet_traffic")
+            parsed.packetTrafficOverlay = parseBoolean(
+                    value, fallback.packetTrafficOverlay);
     }
 
     return version && *version == kPreferencesVersion ? parsed : fallback;
@@ -62,7 +65,9 @@ std::string serializeDeveloperPreferences(const DeveloperPreferences& preference
             "\nchest_esp=" + (preferences.chestEsp ? "true" : "false") +
             "\nore_esp=" + (preferences.oreEsp ? "true" : "false") +
             "\nnetwork_metrics=" +
-            (preferences.networkMetricsOverlay ? "true" : "false") + "\n";
+            (preferences.networkMetricsOverlay ? "true" : "false") +
+            "\npacket_traffic=" +
+            (preferences.packetTrafficOverlay ? "true" : "false") + "\n";
 }
 
 } // namespace dobby

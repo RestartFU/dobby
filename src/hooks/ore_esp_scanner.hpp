@@ -1,18 +1,25 @@
 #pragma once
 
 #include "hooks/minecraft_image.hpp"
-#include "ui/chest_esp.hpp"
+#include "ui/ore_esp.hpp"
 
 #include <cstdint>
+#include <optional>
 
 namespace dobby {
 
 bool initializeOreEspScanner(const MinecraftImage& image);
 bool oreEspScannerReady();
-void scanClientChunkOres(
+void trackClientChunkForOreEsp(
         const void* chunk, const void* levelIdentity, ChunkPosition position);
-void scanClientSubChunkOres(
-        const void* chunk, const void* levelIdentity, ChunkPosition position,
-        std::int16_t absoluteSubChunk);
+void dirtyClientChunkForOreEsp(
+        const void* chunk, const void* levelIdentity, ChunkPosition position);
+void untrackClientChunkForOreEsp(
+        const void* chunk, const void* levelIdentity, ChunkPosition position);
+std::optional<OreChunkScanTarget> untrackClientChunkForOreEsp(
+        const void* chunk);
+void requestClientOreRescan();
+void processClientOreRescan(
+        const void* levelIdentity, Vec3f cameraPosition);
 
 } // namespace dobby

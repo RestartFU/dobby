@@ -6,18 +6,23 @@
 #include "diagnostics/report_builder.hpp"
 #include "diagnostics/stream_probe.hpp"
 #include "diagnostics/violation_decoder.hpp"
+#include "hooks/render_camera.hpp"
+#include "hooks/overlay_camera_hook.hpp"
 #include "metrics/chunk_metrics_layout.hpp"
 #include "metrics/client_performance.hpp"
 #include "network/packet_names.hpp"
 #include "metrics/network_metrics.hpp"
+#include "metrics/packet_traffic.hpp"
 #include "platform/preferences_store.hpp"
 #include "platform/safe_memory.hpp"
 #include "ui/chest_esp.hpp"
 #include "ui/entity_hitbox_overlay.hpp"
 #include "ui/network_metrics_overlay.hpp"
+#include "ui/packet_traffic_overlay.hpp"
 #include "ui/ore_esp.hpp"
 #include "ui/window_policy.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -29,7 +34,9 @@
 #include <iostream>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -211,7 +218,15 @@ void testEntityHitboxState() {
     const bool metricsInitiallyVisible = state.networkMetricsOverlay();
     assert(state.toggleNetworkMetricsOverlay() != metricsInitiallyVisible);
     assert(state.toggleNetworkMetricsOverlay() == metricsInitiallyVisible);
+    const bool packetTrafficInitiallyVisible = state.packetTrafficOverlay();
+    assert(state.togglePacketTrafficOverlay() !=
+           packetTrafficInitiallyVisible);
+    assert(state.togglePacketTrafficOverlay() ==
+           packetTrafficInitiallyVisible);
+    state.setPacketTrafficAvailable(true);
+    assert(state.packetTrafficAvailable());
     static_cast<void>(metricsInitiallyVisible);
+    static_cast<void>(packetTrafficInitiallyVisible);
     static_cast<void>(chestInitiallyVisible);
     static_cast<void>(oreInitiallyVisible);
 }
@@ -234,6 +249,51 @@ void testEntityProjection() {
             0x11fbe330);
     static_assert(
             dobby::target::kLevelRenderFrameSignature[0] == 0xff);
+    static_assert(
+            dobby::target::kLevelRendererPlayerVtableOffset ==
+            0x11fbe270);
+    static_assert(
+            dobby::target::kLevelRenderCameraPointerOffset == 0x18);
+    static_assert(
+            dobby::target::kLevelRenderCameraPointerProbeOffset ==
+            0x0ae1a1bc);
+    static_assert(
+            dobby::target::kLevelRenderCameraPointerProbeSignature[0] ==
+            0xc0);
+    static_assert(
+            dobby::target::kLevelRenderCameraCaptureOffset ==
+            0x0ae1a1c4);
+    static_assert(
+            dobby::target::kLevelRenderCameraCaptureSignature[0] ==
+            0x68);
+    static_assert(
+            dobby::target::kLevelRendererCameraPositionOffset == 0x6f4);
+    static_assert(
+            dobby::target::kLevelRendererCameraPositionUseProbeOffset ==
+            0x0ae0ad30);
+    static_assert(
+            dobby::target::kLevelRendererCameraPositionUseProbeSignature[0] ==
+            0x01);
+    static_assert(dobby::target::kLevelRendererLevelOffset == 0x958);
+    static_assert(
+            dobby::target::kLevelRendererLevelLayoutProbeOffset ==
+            0x0ae2354c);
+    static_assert(
+            dobby::target::kLevelRendererLevelLayoutProbeSignature[0] ==
+            0x76);
+    static_assert(
+            dobby::target::kLevelRendererLevelUseProbeOffset ==
+            0x0ae23c64);
+    static_assert(
+            dobby::target::kLevelRendererLevelUseProbeSignature[0] ==
+            0x60);
+    static_assert(
+            static_cast<std::size_t>(
+                    dobby::RenderCameraCaptureFailure::count) <= 32);
+    static_assert(
+            dobby::renderCameraCaptureFailureName(
+                    dobby::RenderCameraCaptureFailure::cameraPositionUnavailable) ==
+            "camera_position");
     static_assert(dobby::target::kLevelGetRuntimeActorListOffset == 0x0f226d10);
     static_assert(dobby::target::kLevelGetRuntimeActorListVtableSlot == 326);
     static_assert(dobby::target::kLevelForEachPlayerOffset == 0x0f225e4c);
@@ -262,6 +322,12 @@ void testEntityProjection() {
               0.0F, 0.0F, -1.0F, -1.0F,
               0.0F, 0.0F, -0.2F, 0.0F}},
     };
+    auto zeroViewCamera = camera;
+    zeroViewCamera.view.fill(0.0F);
+    require(!dobby::validCameraFrame(zeroViewCamera));
+    auto impossiblePositionCamera = camera;
+    impossiblePositionCamera.position.x = 1.0e20F;
+    require(!dobby::validCameraFrame(impossiblePositionCamera));
     const std::array observations{
             dobby::EntityHitboxObservation{
                     reinterpret_cast<const void*>(0x2000),
@@ -271,19 +337,14 @@ void testEntityProjection() {
                     {{0.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 1.0F}}},
     };
     const auto submitted = dobby::submitEntityHitboxFrame(
-            reinterpret_cast<const void*>(0x1000), camera, observations);
+            reinterpret_cast<const void*>(0x1000), observations);
     require(submitted.accepted == 1);
     require(submitted.invalid == 1);
     const void* cameraLevel = nullptr;
     dobby::CameraFrame retainedCamera{};
     std::uint64_t missedFrames = 0;
-    require(dobby::currentOverlayCamera(
-            8, cameraLevel, retainedCamera, &missedFrames));
-    require(cameraLevel == reinterpret_cast<const void*>(0x1000));
-    require(missedFrames == 8);
     require(!dobby::currentOverlayCamera(
-            9, cameraLevel, retainedCamera, &missedFrames));
-    require(missedFrames == 9);
+            0, cameraLevel, retainedCamera, &missedFrames));
     auto refreshedCamera = camera;
     refreshedCamera.position = {4.0F, 5.0F, 6.0F};
     require(dobby::submitOverlayCameraFrame(
@@ -293,6 +354,19 @@ void testEntityProjection() {
     require(retainedCamera.position.x == 4.0F);
     require(retainedCamera.position.y == 5.0F);
     require(retainedCamera.position.z == 6.0F);
+    require(dobby::submitEntityHitboxFrame(
+                    reinterpret_cast<const void*>(0x9000), observations)
+                    .accepted == 1);
+    require(dobby::currentOverlayCamera(
+            0, cameraLevel, retainedCamera, &missedFrames));
+    require(cameraLevel == reinterpret_cast<const void*>(0x1000));
+    require(retainedCamera.position.x == 4.0F);
+    require(!dobby::submitOverlayCameraFrame(
+            reinterpret_cast<const void*>(0x1000),
+            impossiblePositionCamera));
+    require(dobby::currentOverlayCamera(
+            0, cameraLevel, retainedCamera, &missedFrames));
+    require(retainedCamera.position.x == 4.0F);
     require(!dobby::submitOverlayCameraFrame(nullptr, refreshedCamera));
     dobby::ScreenPoint center{};
     const bool centerProjected = dobby::projectWorldPoint(
@@ -300,6 +374,10 @@ void testEntityProjection() {
     assert(centerProjected);
     assert(center.x == 960.0F);
     assert(center.y == 540.0F);
+    require(dobby::worldPointWithinViewport(
+            camera, {0.0F, 0.0F, -5.0F}));
+    require(!dobby::worldPointWithinViewport(
+            camera, {100.0F, 0.0F, -5.0F}));
 
     dobby::ScreenPoint right{};
     const bool rightProjected = dobby::projectWorldPoint(
@@ -563,6 +641,68 @@ void testConfigurationAndPacketCatalog() {
     static_assert(dobby::packetName(9999) == "UnknownPacket");
 }
 
+void testPacketTrafficMetrics() {
+    static_assert(!dobby::worldRenderIsFresh(0, 1000));
+    static_assert(dobby::worldRenderIsFresh(1000, 2000));
+    static_assert(!dobby::worldRenderIsFresh(1000, 2001));
+    static_assert(!dobby::worldRenderIsFresh(2000, 1000));
+    dobby::PacketTrafficTracker traffic;
+    traffic.recordPacket(dobby::PacketDirection::incoming, 100, 1000);
+    traffic.recordPacket(dobby::PacketDirection::incoming, 120, 1050);
+    traffic.recordPacket(dobby::PacketDirection::outgoing, 2048, 1090);
+
+    const auto snapshot = traffic.snapshot(1100);
+    require(snapshot.incomingPackets == 2);
+    require(snapshot.outgoingPackets == 1);
+    require(snapshot.incomingBytes == 220);
+    require(snapshot.outgoingBytes == 2048);
+    require(snapshot.incomingPacketsPerSecond == 2);
+    require(snapshot.outgoingPacketsPerSecond == 1);
+    require(snapshot.incomingBytesPerSecond == 220);
+    require(snapshot.outgoingBytesPerSecond == 2048);
+
+    const auto text = dobby::formatPacketTraffic(snapshot);
+    require(text.incomingSummary == "IN 2/S 220B/S TOTAL 220B");
+    require(text.outgoingSummary == "OUT 1/S 2.0KB/S TOTAL 2.0KB");
+    dobby::PacketTrafficSnapshot scaledTotals;
+    scaledTotals.incomingBytes = 1536ULL * 1024ULL * 1024ULL;
+    scaledTotals.outgoingBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+    const auto scaledText = dobby::formatPacketTraffic(scaledTotals);
+    require(scaledText.incomingSummary == "IN 0/S 0B/S TOTAL 1.5GB");
+    require(scaledText.outgoingSummary == "OUT 0/S 0B/S TOTAL 2.0GB");
+
+    const auto geometry = dobby::buildPacketTrafficGeometry(
+            snapshot, 1280.0F, 720.0F);
+    require(!geometry.shadowVertices.empty());
+    require(!geometry.incomingVertices.empty());
+    require(!geometry.outgoingVertices.empty());
+    float maximumHorizontal = -1.0F;
+    float minimumVertical = 1.0F;
+    for (std::size_t index = 0; index < geometry.shadowVertices.size();
+         index += 2) {
+        maximumHorizontal = std::max(
+                maximumHorizontal, geometry.shadowVertices[index]);
+        minimumVertical = std::min(
+                minimumVertical, geometry.shadowVertices[index + 1]);
+    }
+    require(maximumHorizontal > 0.9F);
+    require(minimumVertical < -0.7F);
+    require(dobby::buildPacketTrafficGeometry(snapshot, 0.0F, 720.0F)
+                    .shadowVertices.empty());
+
+    require(traffic.snapshot(2100).incomingPacketsPerSecond == 0);
+    traffic.reset();
+    require(traffic.snapshot(5000).incomingPackets == 0);
+
+    static_assert(dobby::target::kPacketObserverVtableOffset == 0x120a5148);
+    static_assert(dobby::target::kPacketSentToOffset == 0x0c2a0548);
+    static_assert(dobby::target::kPacketSentToVtableSlotOffset == 0x120a5158);
+    static_assert(dobby::target::kPacketReceivedFromOffset == 0x0c2a058c);
+    static_assert(dobby::target::kPacketReceivedFromVtableSlotOffset ==
+                  0x120a5160);
+    static_assert(dobby::target::kPacketGetIdVtableSlot == 2);
+}
+
 void testDeveloperPreferences() {
     const dobby::DeveloperPreferences defaults{
             .autoPopup = true,
@@ -570,6 +710,7 @@ void testDeveloperPreferences() {
             .chestEsp = false,
             .oreEsp = true,
             .networkMetricsOverlay = true,
+            .packetTrafficOverlay = true,
     };
 
     const auto parsed = dobby::parseDeveloperPreferences(
@@ -578,13 +719,15 @@ void testDeveloperPreferences() {
             "entity_hitboxes=false\n"
             "chest_esp=true\n"
             "ore_esp=false\n"
-            "network_metrics=0\n",
+            "network_metrics=0\n"
+            "packet_traffic=false\n",
             defaults);
     require(!parsed.autoPopup);
     require(!parsed.entityHitboxes);
     require(parsed.chestEsp);
     require(!parsed.oreEsp);
     require(!parsed.networkMetricsOverlay);
+    require(!parsed.packetTrafficOverlay);
 
     const auto malformed = dobby::parseDeveloperPreferences(
             "version=1\n"
@@ -593,6 +736,7 @@ void testDeveloperPreferences() {
             "chest_esp=unknown\n"
             "ore_esp=unknown\n"
             "network_metrics=unknown\n"
+            "packet_traffic=unknown\n"
             "future_setting=false\n",
             defaults);
     require(malformed.autoPopup);
@@ -600,6 +744,7 @@ void testDeveloperPreferences() {
     require(!malformed.chestEsp);
     require(malformed.oreEsp);
     require(malformed.networkMetricsOverlay);
+    require(malformed.packetTrafficOverlay);
 
     const auto unsupported = dobby::parseDeveloperPreferences(
             "version=2\nentity_hitboxes=false\n", defaults);
@@ -642,8 +787,26 @@ void testOreEspRegistry() {
     require(dobby::validBlockResourceName("economy:custom/block"));
     require(!dobby::validBlockResourceName("diamond_ore"));
     require(!dobby::validBlockResourceName("Economy:custom_block"));
+    const auto unreadableName = dobby::classifyOreBlockNameForCache(
+            std::nullopt);
+    require(!unreadableName.cacheable);
+    require(!unreadableName.ore);
+    const auto invalidName = dobby::classifyOreBlockNameForCache(
+            std::string_view{"diamond_ore"});
+    require(!invalidName.cacheable);
+    require(!invalidName.ore);
+    const auto cacheableNonOre = dobby::classifyOreBlockNameForCache(
+            std::string_view{"minecraft:stone"});
+    require(cacheableNonOre.cacheable);
+    require(!cacheableNonOre.ore);
     require(dobby::classifyOreBlockName("minecraft:diamond_ore") ==
             dobby::OreKind::diamond);
+    require(dobby::classifyOreBlockName("minecraft:diamond_block") ==
+            dobby::OreKind::diamond);
+    require(dobby::classifyOreBlockName("minecraft:raw_iron_block") ==
+            dobby::OreKind::iron);
+    require(dobby::classifyOreBlockName("minecraft:netherite_block") ==
+            dobby::OreKind::ancientDebris);
     require(dobby::classifyOreBlockName(
                     "minecraft:deepslate_redstone_ore") ==
             dobby::OreKind::redstone);
@@ -652,6 +815,120 @@ void testOreEspRegistry() {
     require(dobby::classifyOreBlockName("minecraft:ancient_debris") ==
             dobby::OreKind::ancientDebris);
     require(!dobby::classifyOreBlockName("minecraft:stone"));
+
+    const auto* scanLevel = reinterpret_cast<const void*>(0x3000);
+    const dobby::OreChunkScanTarget distant{
+            reinterpret_cast<const void*>(0x4000), scanLevel, {10, 10}};
+    const dobby::OreChunkScanTarget nearbyTarget{
+            reinterpret_cast<const void*>(0x5000), scanLevel, {0, 0}};
+    dobby::OreRescanSchedule schedule(2, 100);
+    require(schedule.track(distant) ==
+            dobby::OreChunkTrackResult::accepted);
+    require(schedule.track(nearbyTarget) ==
+            dobby::OreChunkTrackResult::accepted);
+    require(schedule.track(nearbyTarget) ==
+            dobby::OreChunkTrackResult::accepted);
+    require(schedule.size() == 2);
+    require(schedule.pendingForLevel(scanLevel) == 2);
+    require(schedule.sizeForLevel(scanLevel) == 2);
+    require(schedule.sizeForLevel(
+                    reinterpret_cast<const void*>(0x9990)) == 0);
+    require(schedule.selectNext(scanLevel, {0.0F, 64.0F, 0.0F}, 0) ==
+            nearbyTarget);
+    schedule.markScanned(nearbyTarget, 0);
+    require(schedule.pendingForLevel(scanLevel) == 1);
+    require(schedule.track(nearbyTarget) ==
+            dobby::OreChunkTrackResult::accepted);
+    require(schedule.pendingForLevel(scanLevel) == 1);
+    require(schedule.selectNext(scanLevel, {0.0F, 64.0F, 0.0F}, 0) ==
+            distant);
+    require(schedule.markDirty(nearbyTarget));
+    require(schedule.pendingForLevel(scanLevel) == 2);
+    require(schedule.selectNext(scanLevel, {0.0F, 64.0F, 0.0F}, 0) ==
+            nearbyTarget);
+    schedule.markScanned(nearbyTarget, 0);
+    schedule.markScanned(distant, 1);
+    require(schedule.pendingForLevel(scanLevel) == 0);
+    require(!schedule.selectNext(
+            scanLevel, {0.0F, 64.0F, 0.0F}, 100));
+    require(schedule.selectNext(
+                    scanLevel, {0.0F, 64.0F, 0.0F}, 101) == nearbyTarget);
+    schedule.markScanned(nearbyTarget, 101);
+    schedule.requestFullRescan();
+    require(schedule.pendingForLevel(scanLevel) == 2);
+    require(schedule.remove(distant));
+    require(schedule.size() == 1);
+
+    dobby::OreRescanSchedule replacementSchedule(2, 100);
+    const dobby::OreChunkScanTarget oldChunk{
+            reinterpret_cast<const void*>(0x6100), scanLevel, {3, 4}};
+    const dobby::OreChunkScanTarget replacementChunk{
+            reinterpret_cast<const void*>(0x6200), scanLevel, {3, 4}};
+    require(replacementSchedule.track(oldChunk) ==
+            dobby::OreChunkTrackResult::accepted);
+    replacementSchedule.markScanned(oldChunk, 0);
+    require(replacementSchedule.track(replacementChunk) ==
+            dobby::OreChunkTrackResult::accepted);
+    require(replacementSchedule.trackIfAbsent(oldChunk) ==
+            dobby::OreChunkTrackResult::existingOwner);
+    require(!replacementSchedule.markDirty(oldChunk));
+    require(!replacementSchedule.remove(oldChunk));
+    require(replacementSchedule.size() == 1);
+    require(replacementSchedule.selectNext(
+                    scanLevel, {48.0F, 64.0F, 64.0F}, 0) ==
+            replacementChunk);
+    const auto removedReplacement = replacementSchedule.removeByChunk(
+            replacementChunk.chunk);
+    require(removedReplacement == replacementChunk);
+    require(!replacementSchedule.removeByChunk(replacementChunk.chunk));
+    require(!replacementSchedule.removeByChunk(nullptr));
+
+    dobby::OreRescanSchedule evictionSchedule(2, 100);
+    const dobby::OreChunkScanTarget oldest{
+            reinterpret_cast<const void*>(0x7000), scanLevel, {-2, 0}};
+    const dobby::OreChunkScanTarget middle{
+            reinterpret_cast<const void*>(0x7100), scanLevel, {-1, 0}};
+    const dobby::OreChunkScanTarget frontier{
+            reinterpret_cast<const void*>(0x7200), scanLevel, {0, 0}};
+    require(evictionSchedule.track(oldest) ==
+            dobby::OreChunkTrackResult::accepted);
+    require(evictionSchedule.track(middle) ==
+            dobby::OreChunkTrackResult::accepted);
+    require(evictionSchedule.track(oldest) ==
+            dobby::OreChunkTrackResult::accepted);
+    std::optional<dobby::OreChunkScanTarget> evicted;
+    require(evictionSchedule.track(frontier, &evicted) ==
+            dobby::OreChunkTrackResult::acceptedWithEviction);
+    require(evicted == oldest);
+    require(evictionSchedule.size() == 2);
+    require(!evictionSchedule.remove(oldest));
+    require(evictionSchedule.selectNext(
+                    scanLevel, {8.0F, 64.0F, 0.0F}, 0) == frontier);
+    dobby::OreRescanSchedule zeroCapacity(0, 100);
+    require(zeroCapacity.track(frontier) ==
+            dobby::OreChunkTrackResult::capacityReached);
+
+    dobby::OreRescanSchedule retrySchedule(2, 100);
+    const dobby::OreChunkScanTarget retryNearest{
+            reinterpret_cast<const void*>(0x8000), scanLevel, {0, 0}};
+    const dobby::OreChunkScanTarget retryOther{
+            reinterpret_cast<const void*>(0x8100), scanLevel, {2, 0}};
+    require(retrySchedule.track(retryNearest) ==
+            dobby::OreChunkTrackResult::accepted);
+    require(retrySchedule.track(retryOther) ==
+            dobby::OreChunkTrackResult::accepted);
+    require(retrySchedule.markRetry(retryNearest, 100, 50));
+    require(retrySchedule.markDirty(retryNearest));
+    require(retrySchedule.markDirty(retryNearest));
+    require(retrySchedule.pendingForLevel(scanLevel) == 2);
+    require(retrySchedule.selectNext(
+                    scanLevel, {0.0F, 64.0F, 0.0F}, 100) == retryOther);
+    retrySchedule.markScanned(retryOther, 100);
+    require(!retrySchedule.selectNext(
+            scanLevel, {0.0F, 64.0F, 0.0F}, 149));
+    require(retrySchedule.selectNext(
+                    scanLevel, {0.0F, 64.0F, 0.0F}, 150) ==
+            retryNearest);
 
     require(dobby::packedPaletteIndex({}, 0, 4'095, 1) == 0);
     require(!dobby::packedPaletteIndex({}, 0, 0, 2));
@@ -679,6 +956,8 @@ void testOreEspRegistry() {
             dobby::ChunkOreUpdateResult::accepted);
     require(registry.size() == 2);
     require(registry.sizeForLevel(level) == 2);
+    require(registry.chunkCount() == 1);
+    require(registry.chunkCountForLevel(level) == 1);
     const auto nearby = registry.snapshotNear(
             level, {32.0F, 5.0F, -48.0F}, 8.0F, 8);
     require(nearby.size() == 2);
@@ -693,6 +972,117 @@ void testOreEspRegistry() {
             dobby::ChunkOreUpdateResult::invalidInput);
     registry.removeChunk(level, chunk);
     require(registry.size() == 0);
+    require(registry.chunkCount() == 0);
+
+    dobby::ChunkOreRegistry spatialRegistry(4, 8);
+    const dobby::ChunkPosition farChunk{5, 0};
+    const dobby::ChunkPosition nearChunk{0, 0};
+    require(spatialRegistry.replaceSubChunk(
+                    level, farChunk, 0,
+                    {{{80, 5, 0}, dobby::OreKind::gold}}) ==
+            dobby::ChunkOreUpdateResult::accepted);
+    require(spatialRegistry.replaceSubChunk(
+                    level, nearChunk, 0,
+                    {{{0, 5, 0}, dobby::OreKind::diamond}}) ==
+            dobby::ChunkOreUpdateResult::accepted);
+    const auto nearestLimited = spatialRegistry.snapshotNear(
+            level, {0.0F, 5.0F, 0.0F}, 128.0F, 1);
+    require(nearestLimited.size() == 1);
+    require(nearestLimited.front().position ==
+            dobby::BlockPosition{0, 5, 0});
+    require(nearestLimited.front().kind == dobby::OreKind::diamond);
+
+    dobby::ChunkOreRegistry viewportRegistry(4, 8);
+    const dobby::ChunkPosition behindChunk{0, 0};
+    const dobby::ChunkPosition visibleChunk{0, -2};
+    require(viewportRegistry.replaceSubChunk(
+                    level, behindChunk, 0,
+                    {{{0, 5, 0}, dobby::OreKind::iron}}) ==
+            dobby::ChunkOreUpdateResult::accepted);
+    require(viewportRegistry.replaceSubChunk(
+                    level, visibleChunk, 0,
+                    {{{0, 5, -32}, dobby::OreKind::diamond}}) ==
+            dobby::ChunkOreUpdateResult::accepted);
+    const dobby::CameraFrame selectionCamera{
+            {0.0F, 5.0F, 0.0F},
+            {{1.0F, 0.0F, 0.0F, 0.0F,
+              0.0F, 1.0F, 0.0F, 0.0F,
+              0.0F, 0.0F, 1.0F, 0.0F,
+              0.0F, 0.0F, 0.0F, 1.0F}},
+            {{0.5625F, 0.0F, 0.0F, 0.0F,
+              0.0F, 1.0F, 0.0F, 0.0F,
+              0.0F, 0.0F, -1.0F, -1.0F,
+              0.0F, 0.0F, -0.2F, 0.0F}},
+    };
+    const auto visibleLimited = viewportRegistry.snapshotNear(
+            level, selectionCamera.position, 64.0F, 1, &selectionCamera);
+    require(visibleLimited.size() == 1);
+    require(visibleLimited.front().position ==
+            dobby::BlockPosition{0, 5, -32});
+    require(visibleLimited.front().kind == dobby::OreKind::diamond);
+
+    dobby::ChunkOreRegistry atomicRegistry(2, 3);
+    const dobby::ChunkPosition atomicChunk{0, 0};
+    const std::vector<dobby::OreSubChunkSnapshot> initialChunk{{
+            0,
+            {{{0, 1, 0}, dobby::OreKind::diamond}},
+    }, {
+            1,
+            {{{1, 16, 1}, dobby::OreKind::gold}},
+    }};
+    require(atomicRegistry.replaceChunk(level, atomicChunk, initialChunk) ==
+            dobby::ChunkOreUpdateResult::accepted);
+    require(atomicRegistry.size() == 2);
+    require(atomicRegistry.chunkCount() == 1);
+
+    const std::vector<dobby::OreSubChunkSnapshot> invalidWholeChunk{{
+            0,
+            {{{2, 2, 2}, dobby::OreKind::emerald}},
+    }, {
+            1,
+            {{{16, 16, 0}, dobby::OreKind::iron}},
+    }};
+    require(atomicRegistry.replaceChunk(
+                    level, atomicChunk, invalidWholeChunk) ==
+            dobby::ChunkOreUpdateResult::invalidInput);
+    const auto preservedAfterInvalid = atomicRegistry.snapshotNear(
+            level, {0.0F, 8.0F, 0.0F}, 64.0F, 8);
+    require(preservedAfterInvalid.size() == 2);
+    require(std::find(
+                    preservedAfterInvalid.begin(), preservedAfterInvalid.end(),
+                    dobby::OreBlock{{0, 1, 0}, dobby::OreKind::diamond}) !=
+            preservedAfterInvalid.end());
+    require(std::find(
+                    preservedAfterInvalid.begin(), preservedAfterInvalid.end(),
+                    dobby::OreBlock{{1, 16, 1}, dobby::OreKind::gold}) !=
+            preservedAfterInvalid.end());
+
+    const std::vector<dobby::OreSubChunkSnapshot> oversizedReplacement{{
+            0,
+            {
+                    {{3, 3, 3}, dobby::OreKind::coal},
+                    {{4, 3, 3}, dobby::OreKind::iron},
+                    {{5, 3, 3}, dobby::OreKind::copper},
+                    {{6, 3, 3}, dobby::OreKind::emerald},
+            },
+    }};
+    require(atomicRegistry.replaceChunk(
+                    level, atomicChunk, oversizedReplacement) ==
+            dobby::ChunkOreUpdateResult::positionCapacityReached);
+    require(atomicRegistry.size() == 2);
+
+    const std::vector<dobby::OreSubChunkSnapshot> finalChunk{{
+            0,
+            {{{2, 2, 2}, dobby::OreKind::emerald}},
+    }};
+    require(atomicRegistry.replaceChunk(level, atomicChunk, finalChunk) ==
+            dobby::ChunkOreUpdateResult::accepted);
+    const auto finalSnapshot = atomicRegistry.snapshotNear(
+            level, {0.0F, 8.0F, 0.0F}, 64.0F, 8);
+    require(finalSnapshot == std::vector<dobby::OreBlock>{{
+            {2, 2, 2}, dobby::OreKind::emerald}});
+    require(atomicRegistry.size() == 1);
+    require(atomicRegistry.chunkCountForLevel(level) == 1);
 }
 
 void testDobbyWindowPolicy() {
@@ -720,6 +1110,7 @@ int main() {
     testNetworkMetrics();
     testClientPerformanceMetrics();
     testConfigurationAndPacketCatalog();
+    testPacketTrafficMetrics();
     testDeveloperPreferences();
     testOreEspRegistry();
     testDobbyWindowPolicy();

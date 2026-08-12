@@ -7,7 +7,6 @@
 #include "hooks/minecraft_image.hpp"
 #include "hooks/network_metrics_hook.hpp"
 #include "hooks/ore_esp_scanner.hpp"
-#include "hooks/overlay_camera_hook.hpp"
 #include "metrics/network_metrics.hpp"
 #include "platform/launcher.hpp"
 #include "platform/log.hpp"
@@ -114,7 +113,7 @@ struct ChunkIdentity {
     bool operator==(const ChunkIdentity&) const = default;
 };
 
-constexpr std::size_t kMaximumTrackedChunks = 1'024;
+constexpr std::size_t kMaximumTrackedChunks = 4'096;
 constexpr std::size_t kMaximumPendingChests = 8'192;
 
 std::atomic_bool installed{false};
@@ -301,7 +300,6 @@ void untrackLoadedChunk(ChunkIdentity identity) {
                 pendingChests.end());
     }
     removeClientChunkChests(identity.level, identity.position);
-    removeClientChunkOres(identity.level, identity.position);
 }
 
 void unregisterChestObject(const void* chest) {
@@ -337,22 +335,23 @@ void chunkLoadedDetour(void* coordinator, void* source, void* chunk) {
     const bool metricsEnabled = runtimeState().networkMetricsOverlay();
     const bool chestEnabled = runtimeState().chestEsp();
     const bool oreEnabled = runtimeState().oreEsp();
-    if (!metricsEnabled && !chestEnabled && !oreEnabled)
-        return;
     ChunkIdentity identity{};
     if (readChunkIdentity(chunk, identity)) {
-        observeClientLevelForMetrics(identity.level);
+        // Keeping an opaque chunk identity is cheap and lets Ore ESP scan
+        // chunks that were already loaded when its menu toggle is enabled.
+        trackClientChunkForOreEsp(
+                chunk, identity.level, identity.position);
+        if (!metricsEnabled && !chestEnabled && !oreEnabled)
+            return;
+        if (metricsEnabled)
+            observeClientLevelForMetrics(identity.level);
         if (metricsEnabled) {
             recordClientChunkLoaded(
                     identity.level, identity.position.x, identity.position.z);
         }
-        if (chestEnabled || oreEnabled)
-            rememberOverlayLevelIdentity(identity.level);
         if (chestEnabled)
             trackLoadedChunk(identity);
-        if (oreEnabled)
-            scanClientChunkOres(chunk, identity.level, identity.position);
-    } else {
+    } else if (metricsEnabled || chestEnabled || oreEnabled) {
         logLayoutFailure();
     }
 }
@@ -368,25 +367,24 @@ void subChunkLoadedDetour(
     const bool metricsEnabled = runtimeState().networkMetricsOverlay();
     const bool chestEnabled = runtimeState().chestEsp();
     const bool oreEnabled = runtimeState().oreEsp();
-    if (!metricsEnabled && !chestEnabled && !oreEnabled)
-        return;
     ChunkIdentity identity{};
     if (readChunkIdentity(chunk, identity)) {
-        observeClientLevelForMetrics(identity.level);
+        // Any client subchunk replacement dirties the full chunk's palette
+        // snapshot. The render-side scheduler refreshes it nearest-first.
+        dirtyClientChunkForOreEsp(
+                chunk, identity.level, identity.position);
+        if (!metricsEnabled && !chestEnabled && !oreEnabled)
+            return;
+        if (metricsEnabled)
+            observeClientLevelForMetrics(identity.level);
         if (metricsEnabled) {
             recordClientChunkLoaded(
                     identity.level, identity.position.x, identity.position.z);
         }
-        if (chestEnabled || oreEnabled)
-            rememberOverlayLevelIdentity(identity.level);
         if (chestEnabled)
             trackLoadedChunk(identity);
-        if (oreEnabled) {
-            scanClientSubChunkOres(
-                    chunk, identity.level, identity.position,
-                    absoluteSubChunk);
-        }
-    } else {
+        static_cast<void>(absoluteSubChunk);
+    } else if (metricsEnabled || chestEnabled || oreEnabled) {
         logLayoutFailure();
     }
 }
@@ -394,15 +392,24 @@ void subChunkLoadedDetour(
 void chunkUnloadedDetour(void* coordinator, void* chunk) {
     const bool metricsEnabled = runtimeState().networkMetricsOverlay();
     const bool espEnabled = runtimeState().anyEspEnabled();
-    if (!metricsEnabled && !espEnabled) {
-        if (originalChunkUnloaded != nullptr)
-            originalChunkUnloaded(coordinator, chunk);
-        return;
-    }
     ChunkIdentity identity{};
-    const bool valid = readChunkIdentity(chunk, identity);
+    bool valid = readChunkIdentity(chunk, identity);
+    if (valid) {
+        // Remove the target before Bedrock's callback may release it. The
+        // scheduler holds the same lifetime gate throughout each scan.
+        untrackClientChunkForOreEsp(
+                chunk, identity.level, identity.position);
+    } else if (const auto tracked =
+                       untrackClientChunkForOreEsp(chunk)) {
+        // A damaged or transiently unreadable chunk object can still be
+        // removed exactly by its opaque pointer before Bedrock releases it.
+        identity = {tracked->level, tracked->position};
+        valid = true;
+    }
     if (originalChunkUnloaded != nullptr)
         originalChunkUnloaded(coordinator, chunk);
+    if (!metricsEnabled && !espEnabled)
+        return;
     if (valid) {
         if (metricsEnabled) {
             recordClientChunkUnloaded(
