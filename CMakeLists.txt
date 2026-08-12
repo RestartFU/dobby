@@ -19,6 +19,7 @@ set(DOBBY_COMMON_SOURCES
     src/metrics/network_metrics.cpp
     src/metrics/packet_traffic.cpp
     src/platform/files.cpp
+    src/platform/local_capes.cpp
     src/platform/process_memory.cpp
     src/platform/safe_memory.cpp
     src/platform/preferences_store.cpp
@@ -35,14 +36,18 @@ if(ANDROID)
         src/dobby.cpp
         ${DOBBY_COMMON_SOURCES}
         src/hooks/chest_esp_hook.cpp
+        src/hooks/cape_spoof_hook.cpp
         src/hooks/chunk_metrics_hook.cpp
         src/hooks/entity_hitbox_hook.cpp
         src/hooks/minecraft_image.cpp
         src/hooks/network_metrics_hook.cpp
         src/hooks/ore_esp_scanner.cpp
+        src/hooks/outbound_packet_hook.cpp
         src/hooks/overlay_camera_hook.cpp
         src/hooks/packet_hooks.cpp
         src/hooks/packet_traffic_hook.cpp
+        src/hooks/persona_cape_repository_hook.cpp
+        src/hooks/persona_ownership_hook.cpp
         src/hooks/render_camera.cpp
         src/platform/launcher.cpp
         src/platform/log.cpp

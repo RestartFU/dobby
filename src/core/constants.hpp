@@ -346,6 +346,122 @@ inline constexpr std::uintptr_t kLoopbackSendVtableSlotOffset = 0x120a55a8;
 inline constexpr std::array<std::uint8_t, 16> kLoopbackSendSignature{
         0xff, 0x43, 0x01, 0xd1, 0xfd, 0x7b, 0x03, 0xa9,
         0xf3, 0x23, 0x00, 0xf9, 0xfd, 0xc3, 0x00, 0x91};
+
+// PlayerSkinPacket and SerializedSkinRef targets for the opt-in local cape
+// entitlement test. LeviLamina establishes the logical members and methods;
+// these Android offsets and signatures come from the exact target image.
+inline constexpr std::int32_t kPlayerSkinPacketId = 93;
+inline constexpr std::uintptr_t kPlayerSkinPacketVtableOffset = 0x120f7970;
+inline constexpr std::uintptr_t kPlayerSkinGetIdOffset = 0x0cfefb38;
+inline constexpr std::array<std::uint8_t, 8> kPlayerSkinGetIdSignature{
+        0xa0, 0x0b, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::ptrdiff_t kPlayerSkinSerializedSkinRefOffset = 0x40;
+inline constexpr std::uintptr_t kPlayerSkinLayoutProbeOffset = 0x0a745e4c;
+inline constexpr std::array<std::uint8_t, 16> kPlayerSkinLayoutProbeSignature{
+        0x68, 0x42, 0x41, 0x39, 0x08, 0x01, 0x00, 0x37,
+        0x73, 0x26, 0x40, 0xf9, 0x53, 0x01, 0x00, 0xb5};
+
+inline constexpr std::uintptr_t
+        kSerializedSkinSetPersonaCapeOnClassicOffset = 0x0f0d15d0;
+inline constexpr std::array<std::uint8_t, 12>
+        kSerializedSkinSetPersonaCapeOnClassicSignature{
+                0x08, 0x00, 0x40, 0xf9, 0x01, 0xed, 0x06, 0x39,
+                0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::uintptr_t kSerializedSkinSetPremiumOffset = 0x0f0d1a40;
+inline constexpr std::array<std::uint8_t, 12> kSerializedSkinSetPremiumSignature{
+        0x08, 0x00, 0x40, 0xf9, 0x01, 0xe5, 0x06, 0x39,
+        0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::uintptr_t kSerializedSkinSetPersonaOffset = 0x0f0d1a58;
+inline constexpr std::array<std::uint8_t, 12> kSerializedSkinSetPersonaSignature{
+        0x08, 0x00, 0x40, 0xf9, 0x01, 0xe9, 0x06, 0x39,
+        0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::uintptr_t kSerializedSkinGetPremiumOffset = 0x0f0d1a4c;
+inline constexpr std::array<std::uint8_t, 12> kSerializedSkinGetPremiumSignature{
+        0x08, 0x00, 0x40, 0xf9, 0x00, 0xe5, 0x46, 0x39,
+        0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::uintptr_t kSerializedSkinGetPersonaOffset = 0x0f0d18a4;
+inline constexpr std::array<std::uint8_t, 12> kSerializedSkinGetPersonaSignature{
+        0x08, 0x00, 0x40, 0xf9, 0x00, 0xe9, 0x46, 0x39,
+        0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::uintptr_t
+        kSerializedSkinGetPersonaCapeOnClassicOffset = 0x0f0d1a64;
+inline constexpr std::array<std::uint8_t, 12>
+        kSerializedSkinGetPersonaCapeOnClassicSignature{
+                0x08, 0x00, 0x40, 0xf9, 0x00, 0xed, 0x46, 0x39,
+                0xc0, 0x03, 0x5f, 0xd6};
+
+// The getters below prove the Android SerializedSkinImpl member offsets used
+// to replace only a selected Dobby cape's pixels. SkinImage owns a 24-byte
+// Blob at +0x18: data pointer, deleter, then byte count.
+inline constexpr std::uintptr_t kSerializedSkinGetCapeIdOffset = 0x0f0d1690;
+inline constexpr std::array<std::uint8_t, 12>
+        kSerializedSkinGetCapeIdSignature{
+                0x08, 0x00, 0x40, 0xf9, 0x00, 0x21, 0x05, 0x91,
+                0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::uintptr_t kSerializedSkinGetCapeImageOffset = 0x0f0d1948;
+inline constexpr std::array<std::uint8_t, 12>
+        kSerializedSkinGetCapeImageSignature{
+                0x08, 0x00, 0x40, 0xf9, 0x00, 0xa1, 0x02, 0x91,
+                0xc0, 0x03, 0x5f, 0xd6};
+inline constexpr std::ptrdiff_t kSerializedSkinImplCapeImageOffset = 0xa8;
+inline constexpr std::ptrdiff_t kSerializedSkinImplCapeIdOffset = 0x148;
+inline constexpr std::ptrdiff_t kSkinImageFormatOffset = 0x00;
+inline constexpr std::ptrdiff_t kSkinImageWidthOffset = 0x04;
+inline constexpr std::ptrdiff_t kSkinImageHeightOffset = 0x08;
+inline constexpr std::ptrdiff_t kSkinImageBlobDataOffset = 0x18;
+inline constexpr std::ptrdiff_t kSkinImageBlobSizeOffset = 0x28;
+inline constexpr std::uint32_t kRgba8ImageFormat = 4;
+
+// PersonaRepository vtable entries and manager cache functions used by the
+// native cape picker. Slot 14 returns owned piece UUIDs for requested
+// PieceTypes; slot 12 resolves the corresponding PersonaPiece. The picker
+// also reads the manager's per-PieceType vector directly, so the exact manager
+// lookup and insertion functions are intercepted to keep that cache coherent.
+inline constexpr std::uintptr_t kPersonaRepositoryVtableOffset = 0x11f6e438;
+inline constexpr std::size_t kPersonaRepositoryLookupSlot = 12;
+inline constexpr std::size_t kPersonaRepositoryOwnedPiecesSlot = 14;
+inline constexpr std::uintptr_t kPersonaRepositoryLookupOffset = 0x0a6f3b3c;
+inline constexpr std::array<std::uint8_t, 8>
+        kPersonaRepositoryLookupSignature{
+                0x00, 0x5c, 0x40, 0xf9, 0x34, 0x20, 0xfd, 0x17};
+inline constexpr std::uintptr_t kPersonaRepositoryOwnedPiecesOffset =
+        0x0a6f3b64;
+inline constexpr std::array<std::uint8_t, 8>
+        kPersonaRepositoryOwnedPiecesSignature{
+                0x00, 0x5c, 0x40, 0xf9, 0xc0, 0x20, 0xfd, 0x17};
+inline constexpr std::uintptr_t kPersonaManagerLookupOffset = 0x0a63bc10;
+inline constexpr std::array<std::uint8_t, 16>
+        kPersonaManagerLookupSignature{
+                0xfd, 0x7b, 0xbe, 0xa9, 0xf3, 0x0b, 0x00, 0xf9,
+                0xfd, 0x03, 0x00, 0x91, 0x28, 0x00, 0x40, 0x39};
+inline constexpr std::uintptr_t kPersonaManagerInsertOffset = 0x0a63bc74;
+inline constexpr std::array<std::uint8_t, 16>
+        kPersonaManagerInsertSignature{
+                0xff, 0xc3, 0x01, 0xd1, 0xfd, 0x7b, 0x02, 0xa9,
+                0xf9, 0x1b, 0x00, 0xf9, 0xf8, 0x5f, 0x04, 0xa9};
+inline constexpr std::int32_t kPersonaCapePieceType = 25;
+inline constexpr std::ptrdiff_t kPersonaManagerMutexOffset = 0x1f8;
+inline constexpr std::ptrdiff_t kPersonaManagerPiecesByTypeOffset = 0x220;
+inline constexpr std::size_t kPersonaPieceSize = 0x1c0;
+inline constexpr std::ptrdiff_t kPersonaPieceIdOffset = 0x00;
+inline constexpr std::ptrdiff_t kPersonaPieceUuidOffset = 0x18;
+inline constexpr std::ptrdiff_t kPersonaPiecePackUuidOffset = 0x28;
+inline constexpr std::ptrdiff_t kPersonaPieceTypeOffset = 0x58;
+
+// Boolean feature construction for the client-owned persona filter. The
+// feature name is checked at runtime before its initial value is changed.
+inline constexpr std::uintptr_t kPersonaFeatureConstructorOffset = 0x0c641ed4;
+inline constexpr std::array<std::uint8_t, 16>
+        kPersonaFeatureConstructorSignature{
+                0xff, 0x43, 0x02, 0xd1, 0xfd, 0x7b, 0x04, 0xa9,
+                0xfa, 0x67, 0x05, 0xa9, 0xf8, 0x5f, 0x06, 0xa9};
+inline constexpr std::uintptr_t kPersonaBooleanFeatureVtableOffset = 0x120c3dd0;
+inline constexpr std::int32_t kPersonaRemoveOwnedChecksFeatureId = 27;
+inline constexpr std::ptrdiff_t kPersonaFeatureValueOffset = 0x10;
+inline constexpr std::ptrdiff_t kPersonaFeatureDefaultOffset = 0x11;
+inline constexpr std::ptrdiff_t kPersonaFeatureBackingOffset = 0x08;
+inline constexpr std::ptrdiff_t kPersonaFeatureBackingNameOffset = 0x110;
+inline constexpr std::ptrdiff_t kPersonaFeatureBackingIdOffset = 0x144;
 inline constexpr std::uintptr_t kSubChunkRequestVtableOffset = 0x120e8e30;
 inline constexpr std::ptrdiff_t kSubChunkRequestVectorBeginOffset = 0x38;
 inline constexpr std::ptrdiff_t kSubChunkRequestVectorEndOffset = 0x40;

@@ -4,6 +4,7 @@
 
 #include "core/constants.hpp"
 #include "hooks/minecraft_image.hpp"
+#include "hooks/outbound_packet_hook.hpp"
 #include "metrics/chunk_metrics_layout.hpp"
 #include "metrics/network_metrics.hpp"
 #include "platform/launcher.hpp"
@@ -21,8 +22,6 @@ namespace {
 using DispatcherHandleFn =
         void (*)(const void* dispatcher, const void* source, void* callback,
                  const void* sharedPacket);
-using SendFn = void (*)(void* sender, const void* packet);
-
 constexpr std::uint32_t kMaximumSubChunksPerPacket = 4096;
 std::atomic_bool chunkRateReady{false};
 std::atomic_bool outstandingReady{false};
@@ -33,7 +32,6 @@ std::atomic_bool invalidRequestLayoutLogged{false};
 std::atomic_bool invalidResponseLayoutLogged{false};
 DispatcherHandleFn originalLevelChunkDispatcher = nullptr;
 DispatcherHandleFn originalSubChunkDispatcher = nullptr;
-SendFn originalSend = nullptr;
 std::uintptr_t expectedLevelChunkVtable{};
 std::uintptr_t expectedSubChunkVtable{};
 std::uintptr_t expectedSubChunkRequestVtable{};
@@ -123,11 +121,11 @@ void subChunkDispatcherDetour(
         originalSubChunkDispatcher(dispatcher, source, callback, sharedPacket);
 }
 
-void sendDetour(void* sender, const void* packet) {
-    if (objectHasVtable(packet, expectedSubChunkRequestVtable))
+void observeOutboundPacket(void* packet, std::int32_t) {
+    if (outstandingReady.load(std::memory_order_acquire) &&
+        objectHasVtable(packet, expectedSubChunkRequestVtable)) {
         recordSubChunkRequestPacket(packet);
-    if (originalSend != nullptr)
-        originalSend(sender, packet);
+    }
 }
 
 bool validateTarget(const MinecraftImage& image, std::uintptr_t functionOffset,
@@ -202,28 +200,18 @@ void installChunkMetricsHooks() {
             image, target::kSubChunkDispatcherOffset,
             target::kSubChunkDispatcherVtableSlotOffset,
             target::kSubChunkDispatcherSignature);
-    const bool requestValid = packetVtablesValid && validateTarget(
-            image, target::kLoopbackSendOffset,
-            target::kLoopbackSendVtableSlotOffset,
-            target::kLoopbackSendSignature);
+    const bool requestValid = packetVtablesValid &&
+            outboundPacketHookInstalled() &&
+            registerOutboundPacketHandler(observeOutboundPacket);
     if (responseValid && requestValid) {
         originalSubChunkDispatcher = reinterpret_cast<DispatcherHandleFn>(
                 image.base + target::kSubChunkDispatcherOffset);
-        originalSend = reinterpret_cast<SendFn>(
-                image.base + target::kLoopbackSendOffset);
-        const bool requestInstalled = patchSlot(
-                image.base + target::kLoopbackSendVtableSlotOffset,
-                reinterpret_cast<std::uintptr_t>(sendDetour));
-        const bool responseInstalled = requestInstalled && patchSlot(
+        const bool responseInstalled = patchSlot(
                 image.base + target::kSubChunkDispatcherVtableSlotOffset,
                 reinterpret_cast<std::uintptr_t>(subChunkDispatcherDetour));
-        const bool installed = responseInstalled && requestInstalled;
+        const bool installed = responseInstalled;
         outstandingReady.store(installed, std::memory_order_release);
         if (!installed) {
-            if (requestInstalled) {
-                patchSlot(image.base + target::kLoopbackSendVtableSlotOffset,
-                          image.base + target::kLoopbackSendOffset);
-            }
             if (responseInstalled) {
                 patchSlot(image.base + target::kSubChunkDispatcherVtableSlotOffset,
                           image.base + target::kSubChunkDispatcherOffset);

@@ -12,6 +12,7 @@ struct DeveloperPreferences {
     bool oreEsp{true};
     bool networkMetricsOverlay{true};
     bool packetTrafficOverlay{true};
+    bool capeTestPackets{false};
 
     bool operator==(const DeveloperPreferences&) const = default;
 };

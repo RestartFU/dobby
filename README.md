@@ -3,7 +3,7 @@
 Compact Minecraft Bedrock developer client for macOS
 [mcpelauncher](https://github.com/minecraft-linux/mcpelauncher-manifest).
 
-It captures packet violations and raw decode evidence, displays entity/player hitboxes, outlines client-known chests and ores, and shows passive network, chunk, and packet-traffic metrics.
+It captures packet violations and raw decode evidence, displays entity/player hitboxes, outlines client-known chests and ores, and shows passive network, chunk, and packet-traffic metrics. It also includes an isolated, opt-in cape entitlement test.
 
 ## In-game diagnostic
 
@@ -18,6 +18,12 @@ The bottom-right packet overlay shows compact incoming/outgoing packet and byte 
 `Ore ESP` incrementally scans client-decoded subchunk palettes for vanilla ores, ancient debris, and mineral storage blocks. Loaded chunks refresh nearest-first when enabled, while nearby chunks are rechecked for live block changes. It never requests or modifies chunk data.
 
 Menu toggles are saved locally and restored on the next launch.
+
+## Local cape entitlement test
+
+Put local `* (persona).zip` cape archives in the ignored `capes/` directory. The verified install workflow validates every archive and PNG, decodes each bounded 64×32 RGBA texture, and writes only Dobby's private `dobby-capes` index and pixel files. It does not edit Bedrock's persona cache, catalog, resource-pack directories, or account data. Previous Dobby cape data is backed up before replacement. Cape assets remain local and are never staged by the publish workflow.
+
+Enable `Mods > Dobby > Cape entitlement test` before opening the cape picker. For the exact supported build, Dobby validates the native persona manager and `PersonaRepository` layouts, adds local UUIDs to the manager's in-memory `persona_capes` vector, and resolves those UUIDs through validated piece-lookup hooks. Disabling the toggle removes the local IDs from that vector. Selecting a local UUID reuses the client's validated Pan Cape piece as a resource template. On equip, Dobby accepts only an exact local cape ID and an exact 64×32 RGBA `SerializedSkinImpl` layout, copies that cape's local pixels into the shared skin, and marks the outgoing `PlayerSkinPacket` premium, non-persona, and cape-on-classic. The toggle defaults to off; any target, ABI, ID, image, or vector mismatch leaves mutation disabled.
 
 ![Packet rejection diagnostic window](media/image.png)
 

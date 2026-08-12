@@ -14,6 +14,7 @@
 #include "metrics/network_metrics.hpp"
 #include "metrics/packet_traffic.hpp"
 #include "platform/preferences_store.hpp"
+#include "platform/local_capes.hpp"
 #include "platform/safe_memory.hpp"
 #include "ui/chest_esp.hpp"
 #include "ui/entity_hitbox_overlay.hpp"
@@ -575,6 +576,30 @@ void testNetworkMetrics() {
     static_assert(dobby::target::kSubChunkDispatcherVtableSlotOffset == 0x120a3080);
     static_assert(dobby::target::kLoopbackSendOffset == 0x0c2de4a4);
     static_assert(dobby::target::kLoopbackSendVtableSlotOffset == 0x120a55a8);
+    static_assert(dobby::target::kPlayerSkinPacketId == 93);
+    static_assert(dobby::target::kPlayerSkinPacketVtableOffset == 0x120f7970);
+    static_assert(dobby::target::kPlayerSkinGetIdOffset == 0x0cfefb38);
+    static_assert(dobby::target::kPlayerSkinSerializedSkinRefOffset == 0x40);
+    static_assert(dobby::target::kSerializedSkinSetPersonaCapeOnClassicOffset ==
+                  0x0f0d15d0);
+    static_assert(dobby::target::kSerializedSkinSetPremiumOffset == 0x0f0d1a40);
+    static_assert(dobby::target::kSerializedSkinSetPersonaOffset == 0x0f0d1a58);
+    static_assert(dobby::target::kPersonaFeatureConstructorOffset == 0x0c641ed4);
+    static_assert(dobby::target::kPersonaBooleanFeatureVtableOffset ==
+                  0x120c3dd0);
+    static_assert(dobby::target::kPersonaRemoveOwnedChecksFeatureId == 27);
+    static_assert(dobby::target::kPersonaRepositoryVtableOffset == 0x11f6e438);
+    static_assert(dobby::target::kPersonaRepositoryLookupSlot == 12);
+    static_assert(dobby::target::kPersonaRepositoryOwnedPiecesSlot == 14);
+    static_assert(dobby::target::kPersonaRepositoryLookupOffset == 0x0a6f3b3c);
+    static_assert(dobby::target::kPersonaRepositoryOwnedPiecesOffset ==
+                  0x0a6f3b64);
+    static_assert(dobby::target::kPersonaManagerLookupOffset == 0x0a63bc10);
+    static_assert(dobby::target::kPersonaManagerInsertOffset == 0x0a63bc74);
+    static_assert(dobby::target::kPersonaManagerMutexOffset == 0x1f8);
+    static_assert(dobby::target::kPersonaManagerPiecesByTypeOffset == 0x220);
+    static_assert(dobby::target::kPersonaPieceSize == 0x1c0);
+    static_assert(dobby::target::kPersonaCapePieceType == 25);
     static_assert(dobby::target::kSubChunkRequestVectorBeginOffset == 0x38);
     static_assert(dobby::target::kSubChunkRequestVectorEndOffset == 0x40);
     static_assert(dobby::target::kSubChunkPositionSize == 12);
@@ -711,6 +736,7 @@ void testDeveloperPreferences() {
             .oreEsp = true,
             .networkMetricsOverlay = true,
             .packetTrafficOverlay = true,
+            .capeTestPackets = false,
     };
 
     const auto parsed = dobby::parseDeveloperPreferences(
@@ -720,7 +746,8 @@ void testDeveloperPreferences() {
             "chest_esp=true\n"
             "ore_esp=false\n"
             "network_metrics=0\n"
-            "packet_traffic=false\n",
+            "packet_traffic=false\n"
+            "cape_test_packets=true\n",
             defaults);
     require(!parsed.autoPopup);
     require(!parsed.entityHitboxes);
@@ -728,6 +755,7 @@ void testDeveloperPreferences() {
     require(!parsed.oreEsp);
     require(!parsed.networkMetricsOverlay);
     require(!parsed.packetTrafficOverlay);
+    require(parsed.capeTestPackets);
 
     const auto malformed = dobby::parseDeveloperPreferences(
             "version=1\n"
@@ -737,6 +765,7 @@ void testDeveloperPreferences() {
             "ore_esp=unknown\n"
             "network_metrics=unknown\n"
             "packet_traffic=unknown\n"
+            "cape_test_packets=unknown\n"
             "future_setting=false\n",
             defaults);
     require(malformed.autoPopup);
@@ -745,6 +774,7 @@ void testDeveloperPreferences() {
     require(malformed.oreEsp);
     require(malformed.networkMetricsOverlay);
     require(malformed.packetTrafficOverlay);
+    require(!malformed.capeTestPackets);
 
     const auto unsupported = dobby::parseDeveloperPreferences(
             "version=2\nentity_hitboxes=false\n", defaults);
@@ -761,6 +791,39 @@ void testDeveloperPreferences() {
     require(dobby::saveDeveloperPreferencesFile(path.string(), parsed));
     require(dobby::loadDeveloperPreferencesFile(path.string(), defaults) == parsed);
     std::filesystem::remove(path, error);
+}
+
+void testLocalCapeIndex() {
+    constexpr std::string_view firstId{
+            "12345678-1234-4abc-8def-1234567890ab"};
+    constexpr std::string_view secondId{
+            "abcdef01-2345-4678-9abc-def012345678"};
+    require(dobby::validLocalCapeId(firstId));
+    require(dobby::validLocalCapeId(secondId));
+    require(!dobby::validLocalCapeId(
+            "12345678-1234-4ABC-8def-1234567890ab"));
+    require(!dobby::validLocalCapeId(
+            "12345678-1234-4abc-8def-1234567890a"));
+
+    const auto parsed = dobby::parseLocalCapeIndex(
+            "version=1\n"
+            "12345678-1234-4abc-8def-1234567890ab\tFirst cape\n"
+            "abcdef01-2345-4678-9abc-def012345678\tSecond cape\n");
+    require(parsed && parsed->size() == 2);
+    require((*parsed)[0].pieceId == firstId);
+    require((*parsed)[0].title == "First cape");
+    require((*parsed)[1].pieceId == secondId);
+
+    require(!dobby::parseLocalCapeIndex(
+            "version=2\n"
+            "12345678-1234-4abc-8def-1234567890ab\tCape\n"));
+    require(!dobby::parseLocalCapeIndex(
+            "version=1\n"
+            "12345678-1234-4abc-8def-1234567890ab\tCape\n"
+            "12345678-1234-4abc-8def-1234567890ab\tDuplicate\n"));
+    require(!dobby::parseLocalCapeIndex(
+            "version=1\n"
+            "12345678-1234-4abc-8def-1234567890ab\tBad\tTitle\n"));
 }
 
 void testOreEspRegistry() {
@@ -1112,6 +1175,7 @@ int main() {
     testConfigurationAndPacketCatalog();
     testPacketTrafficMetrics();
     testDeveloperPreferences();
+    testLocalCapeIndex();
     testOreEspRegistry();
     testDobbyWindowPolicy();
     std::cout << "Dobby tests passed\n";

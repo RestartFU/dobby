@@ -1,11 +1,15 @@
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"
 #include "hooks/chunk_metrics_hook.hpp"
+#include "hooks/cape_spoof_hook.hpp"
 #include "hooks/chest_esp_hook.hpp"
 #include "hooks/packet_hooks.hpp"
 #include "hooks/packet_traffic_hook.hpp"
+#include "hooks/persona_cape_repository_hook.hpp"
+#include "hooks/persona_ownership_hook.hpp"
 #include "hooks/entity_hitbox_hook.hpp"
 #include "hooks/network_metrics_hook.hpp"
+#include "hooks/outbound_packet_hook.hpp"
 #include "hooks/overlay_camera_hook.hpp"
 #include "platform/log.hpp"
 
@@ -24,6 +28,10 @@ std::atomic_bool initialized{false};
 
 extern "C" [[gnu::visibility("default")]] void mod_preinit() {
     dobby::logLine("mod_preinit");
+#if defined(__ANDROID__)
+    dobby::installPersonaOwnershipHook();
+    dobby::installPersonaCapeRepositoryHook();
+#endif
 }
 
 extern "C" [[gnu::visibility("default")]] void mod_init() {
@@ -32,8 +40,14 @@ extern "C" [[gnu::visibility("default")]] void mod_init() {
         return;
 
     static_cast<void>(dobby::runtimeState());
+#if defined(__ANDROID__)
+    dobby::installPersonaOwnershipHook();
+    dobby::installPersonaCapeRepositoryHook();
+#endif
     dobby::installPacketHooks();
 #if defined(__ANDROID__)
+    dobby::installOutboundPacketHook();
+    dobby::installCapeSpoofHook();
     dobby::installNetworkMetricsHook();
     dobby::installPacketTrafficHooks();
     dobby::installChunkMetricsHooks();
