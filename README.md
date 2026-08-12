@@ -11,6 +11,8 @@ It captures packet violations and raw decode evidence, displays entity/player hi
 
 The bottom-right packet overlay shows compact incoming/outgoing packet and byte rates plus cumulative traffic formatted in `B`, `KB`, `MB`, `GB`, or `TB`. It appears only while a client world is rendering. `Packet traffic` toggles it independently from the top-right network metrics.
 
+![Dobby packet traffic overlay](media/network.png)
+
 ![Dobby developer metrics overlay](media/debugger.png)
 
 `Chest ESP` outlines chests found in Bedrock's decoded client chunk storage. It does not request or modify world data, so concealed chests appear only if the server actually sent them.
