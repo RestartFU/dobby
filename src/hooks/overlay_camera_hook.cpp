@@ -1,6 +1,6 @@
 #include "hooks/overlay_camera_hook.hpp"
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(__aarch64__)
 
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"
@@ -275,6 +275,16 @@ bool clientWorldRecentlyRendered() {
             lastWorldRenderMilliseconds.load(std::memory_order_acquire),
             monotonicMilliseconds());
 }
+
+} // namespace dobby
+
+#else
+
+namespace dobby {
+
+void installOverlayCameraHook() {}
+bool overlayCameraHookInstalled() { return false; }
+bool clientWorldRecentlyRendered() { return false; }
 
 } // namespace dobby
 

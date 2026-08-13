@@ -8,6 +8,7 @@ run_install=1
 run_launch=1
 run_publish=1
 run_sanitizers=1
+android_abi=${DOBBY_ANDROID_ABI:-}
 commit_message="Update Dobby developer client"
 
 usage() {
@@ -22,6 +23,7 @@ Options:
   --no-launch          Do not restart the launcher or start Minecraft
   --no-push            Do not commit or push repository changes
   --skip-sanitizers    Skip the ASan/UBSan test build
+  --abi ABI            Build arm64-v8a or x86_64 (defaults to host architecture)
   --message TEXT       Commit message used when publishing
   -h, --help           Show this help
 EOF
@@ -38,6 +40,11 @@ while [ "$#" -gt 0 ]; do
         --no-launch) run_launch=0 ;;
         --no-push) run_publish=0 ;;
         --skip-sanitizers) run_sanitizers=0 ;;
+        --abi)
+            shift
+            [ "$#" -gt 0 ] || { echo "error: --abi requires a value" >&2; exit 2; }
+            android_abi=$1
+            ;;
         --message)
             shift
             [ "$#" -gt 0 ] || { echo "error: --message requires text" >&2; exit 2; }
@@ -62,18 +69,28 @@ if [ "$run_launch" -eq 1 ] && [ "$run_install" -eq 0 ]; then
 fi
 
 echo "==> Building and testing Dobby"
+build_args=
 if [ "$run_sanitizers" -eq 1 ]; then
-    scripts/build-all.sh
+    build_args=
 else
-    scripts/build-all.sh --skip-sanitizers
+    build_args=--skip-sanitizers
+fi
+if [ -n "$android_abi" ]; then
+    scripts/build-all.sh ${build_args:+$build_args} --abi "$android_abi"
+else
+    scripts/build-all.sh ${build_args:+$build_args}
 fi
 
 echo "==> Auditing public repository content"
 scripts/verify-public.sh --worktree
 
 if [ "$run_install" -eq 1 ]; then
-    echo "==> Installing the verified ARM64 artifact"
-    scripts/install-launcher.sh
+    echo "==> Installing the verified Android artifact"
+    if [ -n "$android_abi" ]; then
+        scripts/install-launcher.sh --abi "$android_abi"
+    else
+        scripts/install-launcher.sh
+    fi
 fi
 
 if [ "$run_publish" -eq 1 ]; then

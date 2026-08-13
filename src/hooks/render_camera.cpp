@@ -1,6 +1,6 @@
 #include "hooks/render_camera.hpp"
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(__aarch64__)
 
 #include "core/constants.hpp"
 #include "platform/safe_memory.hpp"
@@ -245,6 +245,23 @@ bool captureLevelRenderCameraFrame(
     levelIdentity = *level;
     output = captured;
     return true;
+}
+
+} // namespace dobby
+
+#else
+
+namespace dobby {
+
+bool configureRenderCameraCapture(const MinecraftImage&) { return false; }
+
+bool captureRenderCameraFrame(const void*, CameraFrame&) { return false; }
+
+bool captureLevelRenderCameraFrame(
+        const void*, const void*, const void*&, CameraFrame&,
+        RenderCameraCaptureFailure& failure) {
+    failure = RenderCameraCaptureFailure::notConfigured;
+    return false;
 }
 
 } // namespace dobby

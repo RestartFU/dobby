@@ -1,6 +1,6 @@
 #include "hooks/chest_esp_hook.hpp"
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(__aarch64__)
 
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"
@@ -680,6 +680,15 @@ void installChestEspHook() {
 bool chestEspHookInstalled() {
     return installed.load(std::memory_order_acquire);
 }
+
+} // namespace dobby
+
+#else
+
+namespace dobby {
+
+void installChestEspHook() {}
+bool chestEspHookInstalled() { return false; }
 
 } // namespace dobby
 

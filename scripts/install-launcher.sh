@@ -5,19 +5,32 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$script_dir/common.sh"
 cd "$(project_root)"
 
-artifact=build-android-arm64/libdobby.so
-manifest=mod.json
+android_abi=${DOBBY_ANDROID_ABI:-$(default_android_abi)}
+if [ "${1:-}" = "--abi" ]; then
+    shift
+    [ "$#" -gt 0 ] || { echo "error: --abi requires a value" >&2; exit 2; }
+    android_abi=$1
+    shift
+fi
+[ "$#" -eq 0 ] || { echo "error: unknown install option: $1" >&2; exit 2; }
+validate_android_abi "$android_abi"
+android_build=$(android_build_dir "$android_abi")
+artifact="$android_build/libdobby.so"
+manifest="$android_build/mod.json"
 [ -s "$artifact" ] || { echo "error: run the Android build first" >&2; exit 1; }
+[ -s "$manifest" ] || { echo "error: generated mod manifest is missing" >&2; exit 1; }
 
-launcher_root="$HOME/Library/Application Support/mcpelauncher"
+launcher_root=$(launcher_root)
 mods_root="$launcher_root/mods"
 profiles="$launcher_root/profiles/profiles.ini"
 registered=""
 if [ -f "$profiles" ]; then
     registered=$(sed -n 's/^mods\\[0-9][0-9]*\\path=//p' "$profiles" | \
-        awk '/\/(dobby|packet-debugger)\// {path=$0} END {print path}')
+        awk -v abi="$android_abi" '
+            /\/(dobby|packet-debugger)\// && $0 ~ "/" abi "/?$" {path=$0}
+            END {print path}')
 fi
-install_dir=${registered:-"$mods_root/dobby/1.26.40.5/arm64-v8a/"}
+install_dir=${registered:-"$mods_root/dobby/1.26.40.5/$android_abi/"}
 
 case "$install_dir" in
     "$mods_root"/*) ;;
@@ -49,11 +62,11 @@ mv "$artifact_temp" "$install_dir/libdobby.so"
 mv "$manifest_temp" "$install_dir/mod.json"
 trap - EXIT HUP INT TERM
 
-build_hash=$(shasum -a 256 "$artifact" | awk '{print $1}')
-installed_hash=$(shasum -a 256 "$install_dir/libdobby.so" | awk '{print $1}')
+build_hash=$(sha256_file "$artifact")
+installed_hash=$(sha256_file "$install_dir/libdobby.so")
 [ "$build_hash" = "$installed_hash" ] || { echo "error: installed artifact hash mismatch" >&2; exit 1; }
 
-printf '%s\n' "$install_dir" > build-android-arm64/install-path.txt
+printf '%s\n' "$install_dir" > "$android_build/install-path.txt"
 echo "Installed Dobby $build_hash to: $install_dir"
 
 if [ -d capes ]; then

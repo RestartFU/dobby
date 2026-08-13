@@ -1,6 +1,6 @@
 #include "hooks/ore_esp_scanner.hpp"
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(__aarch64__)
 
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"

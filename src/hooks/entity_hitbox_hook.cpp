@@ -1,6 +1,6 @@
 #include "hooks/entity_hitbox_hook.hpp"
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(__aarch64__)
 
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"
@@ -364,4 +364,15 @@ bool toggleEntityHitboxes() {
 }
 
 } // namespace dobby
+
+#else
+
+namespace dobby {
+
+void installEntityHitboxHook() {}
+bool entityHitboxHookInstalled() { return false; }
+bool toggleEntityHitboxes() { return false; }
+
+} // namespace dobby
+
 #endif

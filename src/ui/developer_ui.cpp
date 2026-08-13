@@ -230,6 +230,16 @@ void registerDeveloperUi() {
     resolveLauncherApi();
     installDobbyWindowPolicy();
     const bool overlayReady = installEntityHitboxOverlay();
+    if constexpr (!kNativeHooksSupported) {
+        runtimeState().setEntityHitboxesAvailable(false);
+        runtimeState().setChestEspAvailable(false);
+        runtimeState().setOreEspAvailable(false);
+        runtimeState().setPacketTrafficAvailable(false);
+        runtimeState().setCapeTestPacketsAvailable(false);
+        logLine(overlayReady
+                ? "Linux x86_64 compatibility overlay ready; native-hook metrics unavailable"
+                : "ERROR: Linux x86_64 compatibility overlay unavailable");
+    }
     const bool hitboxesReady = entityHitboxHookInstalled() && overlayReady;
     runtimeState().setEntityHitboxesAvailable(hitboxesReady);
     const bool chestEspReady = chestEspHookInstalled() && overlayReady;
@@ -268,7 +278,7 @@ void registerDeveloperUi() {
         return;
     }
 
-    static std::array<LauncherMenuEntry, 7> subentries{
+    static std::array<LauncherMenuEntry, 7> fullSubentries{
             LauncherMenuEntry{
                     "Entity hitboxes", nullptr, entityHitboxesSelected, toggleHitboxes, 0, nullptr},
             LauncherMenuEntry{
@@ -286,9 +296,21 @@ void registerDeveloperUi() {
                     toggleCapeTest, 0, nullptr},
             LauncherMenuEntry{"Automatic popup", nullptr, autoPopupSelected, toggleAutoPopup, 0, nullptr},
     };
+    static std::array<LauncherMenuEntry, 2> compatibilitySubentries{
+            LauncherMenuEntry{
+                    "Network metrics", nullptr, networkMetricsSelected,
+                    toggleNetworkMetrics, 0, nullptr},
+            LauncherMenuEntry{
+                    "Automatic popup", nullptr, autoPopupSelected,
+                    toggleAutoPopup, 0, nullptr},
+    };
+    auto* subentries = kNativeHooksSupported
+            ? fullSubentries.data() : compatibilitySubentries.data();
+    const std::size_t subentryCount = kNativeHooksSupported
+            ? fullSubentries.size() : compatibilitySubentries.size();
     static LauncherMenuEntry root{
             "Dobby", nullptr, menuUnselected, showDeveloperStatus,
-            subentries.size(), subentries.data(),
+            subentryCount, subentries,
     };
     static std::array<LauncherMenuEntry, 1> roots{root};
     addLauncherMenu(roots);

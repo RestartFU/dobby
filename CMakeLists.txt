@@ -6,6 +6,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+    add_compile_definitions(DOBBY_HOST_LINUX=1)
+elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    add_compile_definitions(DOBBY_HOST_DARWIN=1)
+endif()
+
 set(DOBBY_COMMON_SOURCES
     src/core/config.cpp
     src/core/preferences.cpp

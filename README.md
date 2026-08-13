@@ -1,6 +1,6 @@
 # Dobby
 
-Compact Minecraft Bedrock developer client for macOS
+Compact Minecraft Bedrock developer client for macOS and Linux
 [mcpelauncher](https://github.com/minecraft-linux/mcpelauncher-manifest).
 
 It captures packet violations and raw decode evidence, displays entity/player hitboxes, outlines client-known chests and ores, and shows passive network, chunk, and packet-traffic metrics. It also includes an isolated, opt-in cape entitlement test.
@@ -34,10 +34,17 @@ Enable `Mods > Dobby > Cape entitlement test` before opening the cape picker. Fo
 ## Target
 
 - Minecraft Android `1.26.40.5`
-- `arm64-v8a`
-- `libminecraftpe.so` build ID `5893edc8d56c93cbdb50e0f9436320236b78c89d`
+- Full native diagnostics: `arm64-v8a`, `libminecraftpe.so` build ID
+  `5893edc8d56c93cbdb50e0f9436320236b78c89d`
+- Linux compatibility mode: `x86_64`, `libminecraftpe.so` build ID
+  `f6e1f0c7ee60774ac31d55742e833264e5c27bb4`
 
-The mod validates the target signature and refuses to patch incompatible builds.
+The ARM64 build validates every target signature and refuses to patch incompatible
+builds. The Linux x86_64 build deliberately does not install native game hooks; it
+provides the Dobby launcher menu, saved preferences, FPS, and Linux resident-memory
+metrics while packet diagnostics, network/chunk hooks, ESP, and cape testing remain
+unavailable. This fail-closed mode is the base for a future independently verified
+x86_64 hook port.
 
 ## Build
 
@@ -45,13 +52,27 @@ The mod validates the target signature and refuses to patch incompatible builds.
 ./build.sh
 ```
 
-The default workflow runs release and sanitizer tests, builds ARM64, audits public
-content, installs the verified artifact, commits and pushes changes, then starts
-Minecraft and confirms Dobby is ready. Use `./build.sh --local` for a build-only
-iteration or `./build.sh --help` for individual opt-outs.
+Build prerequisites are CMake 3.20+, a C++20 host compiler, `make`, `file`, and
+the Android NDK. Set `ANDROID_NDK_HOME` when the NDK is not installed in a
+standard Android SDK location. On Fedora, the host packages are:
 
-Logs default to `~/Library/Application Support/mcpelauncher/`. Set
-`DOBBY_OUTPUT_DIR` to override the output directory. Optional configuration:
+```sh
+sudo dnf install cmake gcc-c++ make file
+ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/28.2.13676358" ./build.sh --local
+```
+
+The default workflow runs release and sanitizer tests, builds the host launcher ABI,
+audits public content, installs the verified artifact, commits and pushes changes,
+then starts Minecraft and confirms Dobby is ready. Linux `x86_64` and ARM Linux/macOS
+`arm64-v8a` are detected automatically; use `--abi arm64-v8a` or `--abi x86_64` to
+override detection. Use `./build.sh --local` for a build-only iteration or
+`./build.sh --help` for individual opt-outs.
+
+On macOS, logs default to `~/Library/Application Support/mcpelauncher/`. The Linux
+Flatpak writes them under `~/.var/app/io.mrarm.mcpelauncher/data/mcpelauncher/`.
+Set `DOBBY_OUTPUT_DIR` to override the output directory. Set `DOBBY_LAUNCHER_ROOT`
+when building or installing for a nonstandard launcher data directory. Optional
+configuration:
 
 - `DOBBY_AUTO_POPUP=0` disables automatic violation popups.
 - `DOBBY_VERBOSE=1` enables verbose developer events.

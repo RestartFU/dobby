@@ -319,6 +319,14 @@ def default_launcher_root() -> Path:
     home = os.environ.get("HOME")
     if not home:
         raise CapePackError("HOME is unavailable; pass --launcher-root explicitly")
+    if sys.platform.startswith("linux"):
+        flatpak_root = (
+            Path(home)
+            / ".var/app/io.mrarm.mcpelauncher/data/mcpelauncher"
+        )
+        xdg_data_home = Path(os.environ.get("XDG_DATA_HOME", Path(home) / ".local/share"))
+        native_root = xdg_data_home / "mcpelauncher"
+        return flatpak_root if flatpak_root.is_dir() or not native_root.is_dir() else native_root
     return Path(home) / "Library/Application Support/mcpelauncher"
 
 

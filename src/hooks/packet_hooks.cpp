@@ -21,7 +21,7 @@
 #include <string>
 #include <string_view>
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(__aarch64__)
 
 extern "C" void* dobby_stream_read_continue = nullptr;
 extern "C" void* dobby_packet_end_continue = nullptr;
@@ -357,4 +357,21 @@ void installPacketHooks() {
 }
 
 } // namespace dobby
+
+#else
+
+namespace dobby {
+
+void installPacketHooks() {
+    runtimeState().setHookStatus(
+            "limited: native x86_64 hooks unavailable", false, false);
+    recordLifecycleEvent(
+            "hook_limited",
+            "Linux x86_64 UI and passive client metrics active; native hooks disabled");
+    logLine(std::string("READY: Dobby ") + kDobbyVersion +
+            " Linux x86_64 compatibility mode active");
+}
+
+} // namespace dobby
+
 #endif

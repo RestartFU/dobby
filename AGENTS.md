@@ -69,7 +69,7 @@
 - Use the launcher's ImGui clipboard bridge when available.
 - Always write a local clipboard fallback before reporting clipboard failure.
 - Do not add GUI frameworks or runtime dependencies without a clear need.
-- Keep Android-only declarations behind `__ANDROID__` guards.
+- Keep Android-only declarations behind `__ANDROID__` guards and native hooks behind ABI guards.
 ## UI modules
 
 - The root menu name is `Dobby`.
@@ -107,8 +107,8 @@
 - Use `./build.sh --local` for isolated build and test iterations.
 - Use `./build.sh` for the verified install, publish, and launch workflow.
 - Keep workflow families isolated under `scripts/` and orchestration in `build.sh`.
-- Build Android for `arm64-v8a` and API 23 or newer.
-- The Android artifact is `build-android-arm64/libdobby.so`.
+- Build Android for `arm64-v8a` or `x86_64` and API 23 or newer.
+- Android artifacts live under their ABI-specific `build-android-*` directory.
 - Only `mod_init` and `mod_preinit` may be public exports.
 ## Logging and privacy
 

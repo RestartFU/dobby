@@ -1,6 +1,6 @@
 #include "hooks/persona_cape_repository_hook.hpp"
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(__aarch64__)
 
 #include "core/constants.hpp"
 #include "core/runtime_state.hpp"

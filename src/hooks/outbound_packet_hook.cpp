@@ -1,6 +1,6 @@
 #include "hooks/outbound_packet_hook.hpp"
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(__aarch64__)
 
 #include "core/constants.hpp"
 #include "hooks/minecraft_image.hpp"

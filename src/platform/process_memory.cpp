@@ -1,15 +1,18 @@
 #include "platform/process_memory.hpp"
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(DOBBY_HOST_DARWIN)
 #include "platform/launcher.hpp"
 
 #include <cstdint>
 #include <mutex>
+#elif defined(DOBBY_HOST_LINUX)
+#include <cstdio>
+#include <unistd.h>
 #endif
 
 namespace dobby {
 
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(DOBBY_HOST_DARWIN)
 namespace {
 
 constexpr int kMachTaskBasicInfoFlavor = 20;
@@ -63,7 +66,7 @@ const ProcessMemoryApi& processMemoryApi() {
 #endif
 
 std::optional<std::uint64_t> currentProcessResidentBytes() {
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(DOBBY_HOST_DARWIN)
     const ProcessMemoryApi& api = processMemoryApi();
     if (api.machTaskSelf == nullptr || api.taskInfo == nullptr)
         return std::nullopt;
@@ -78,6 +81,20 @@ std::optional<std::uint64_t> currentProcessResidentBytes() {
         return std::nullopt;
     }
     return information.residentSize;
+#elif defined(DOBBY_HOST_LINUX)
+    FILE* statistics = std::fopen("/proc/self/statm", "r");
+    if (statistics == nullptr)
+        return std::nullopt;
+    unsigned long totalPages{};
+    unsigned long residentPages{};
+    const int fields = std::fscanf(statistics, "%lu %lu", &totalPages, &residentPages);
+    std::fclose(statistics);
+    static_cast<void>(totalPages);
+    const long pageSize = sysconf(_SC_PAGESIZE);
+    if (fields != 2 || residentPages == 0 || pageSize <= 0)
+        return std::nullopt;
+    return static_cast<std::uint64_t>(residentPages) *
+            static_cast<std::uint64_t>(pageSize);
 #else
     return std::nullopt;
 #endif

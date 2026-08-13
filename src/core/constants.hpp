@@ -6,10 +6,17 @@
 
 namespace dobby {
 
-inline constexpr char kDobbyVersion[] = "2.10.0";
+inline constexpr char kDobbyVersion[] = "2.11.0";
 inline constexpr char kMinecraftVersion[] = "1.26.40.5";
+#if defined(__ANDROID__) && defined(__x86_64__)
+inline constexpr char kMinecraftBuildId[] = "f6e1f0c7ee60774ac31d55742e833264e5c27bb4";
+inline constexpr char kAbi[] = "x86_64";
+inline constexpr bool kNativeHooksSupported = false;
+#else
 inline constexpr char kMinecraftBuildId[] = "5893edc8d56c93cbdb50e0f9436320236b78c89d";
 inline constexpr char kAbi[] = "arm64-v8a";
+inline constexpr bool kNativeHooksSupported = true;
+#endif
 
 inline constexpr std::size_t kDefaultHistoryLimit = 100;
 inline constexpr std::size_t kMaximumHistoryLimit = 1000;
@@ -18,7 +25,8 @@ inline constexpr std::size_t kMaximumRawCaptureLimit = 65536;
 
 namespace target {
 
-// All offsets and signatures are for the exact kMinecraftBuildId image.
+// All native-hook offsets and signatures below are for the exact ARM64 image.
+// x86_64 builds never evaluate or patch these targets.
 inline constexpr std::uintptr_t kViolationGetIdOffset = 0x0cfa1cb4;
 inline constexpr std::uintptr_t kViolationGetIdVtableSlotOffset = 0x120f7160;
 inline constexpr std::array<std::uint8_t, 8> kViolationGetIdSignature{

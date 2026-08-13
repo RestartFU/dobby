@@ -15,6 +15,7 @@
 #include "metrics/packet_traffic.hpp"
 #include "platform/preferences_store.hpp"
 #include "platform/local_capes.hpp"
+#include "platform/process_memory.hpp"
 #include "platform/safe_memory.hpp"
 #include "ui/chest_esp.hpp"
 #include "ui/entity_hitbox_overlay.hpp"
@@ -616,6 +617,9 @@ void testNetworkMetrics() {
 }
 
 void testClientPerformanceMetrics() {
+#if defined(DOBBY_HOST_LINUX)
+    require(dobby::currentProcessResidentBytes().value_or(0) > 0);
+#endif
     dobby::ClientPerformanceTracker performance;
     for (std::uint64_t frame = 0; frame <= 100; ++frame) {
         const bool memorySampleDue =

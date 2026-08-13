@@ -54,9 +54,23 @@ Config loadConfig() {
         result.outputDirectory.assign(overridePath);
     } else {
         const auto home = environmentValue("HOME");
+#if defined(DOBBY_HOST_LINUX)
+        const auto flatpakId = environmentValue("FLATPAK_ID");
+        const auto xdgDataHome = environmentValue("XDG_DATA_HOME");
+        if (home.empty()) {
+            result.outputDirectory = "/tmp/mcpelauncher";
+        } else if (!flatpakId.empty()) {
+            result.outputDirectory = std::string(home) + "/data/mcpelauncher";
+        } else if (!xdgDataHome.empty()) {
+            result.outputDirectory = std::string(xdgDataHome) + "/mcpelauncher";
+        } else {
+            result.outputDirectory = std::string(home) + "/.local/share/mcpelauncher";
+        }
+#else
         result.outputDirectory = home.empty()
                 ? "/private/tmp"
                 : std::string(home) + "/Library/Application Support/mcpelauncher";
+#endif
     }
     return result;
 }

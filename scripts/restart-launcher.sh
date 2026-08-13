@@ -1,10 +1,13 @@
 #!/bin/sh
 set -eu
 
-bundle_id=io.mrarm.mcpelauncher.ui
-profiles_path="$HOME/Library/Application Support/mcpelauncher/profiles/profiles.ini"
-log_path="$HOME/Library/Application Support/mcpelauncher/dobby.log"
-client_pattern='^/Applications/Minecraft Bedrock Launcher.app/Contents/MacOS/(\./)?mcpelauncher-client-arm64-v8a '
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$script_dir/common.sh"
+
+platform=$(host_platform)
+launcher_root=$(launcher_root)
+profiles_path="$launcher_root/profiles/profiles.ini"
+log_path="$launcher_root/dobby.log"
 before_lines=0
 [ ! -f "$log_path" ] || before_lines=$(wc -l < "$log_path" | tr -d ' ')
 
@@ -16,25 +19,48 @@ if [ -z "$profile" ] && [ -f "$profiles_path" ]; then
         general && /^selected=/ {sub(/^selected=/, ""); print; exit}
     ' "$profiles_path")
 fi
+if [ -z "$profile" ] && [ -f "$profiles_path" ]; then
+    profile=$(sed -n 's/^\[\([^]]*\)\]$/\1/p' "$profiles_path" |
+        awk '$0 != "General" {print; exit}')
+fi
 [ -n "$profile" ] || {
     echo "error: no launcher profile selected; set DOBBY_LAUNCHER_PROFILE" >&2
     exit 1
 }
 
-osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
-pkill -TERM -f "$client_pattern" 2>/dev/null || true
-attempt=0
-while pgrep -f "$client_pattern" >/dev/null 2>&1 && [ "$attempt" -lt 10 ]; do
-    sleep 1
-    attempt=$((attempt + 1))
-done
-if pgrep -f "$client_pattern" >/dev/null 2>&1; then
-    echo "error: existing Minecraft client did not stop cleanly" >&2
-    exit 1
-fi
+case "$platform" in
+    macos)
+        bundle_id=io.mrarm.mcpelauncher.ui
+        client_pattern='^/Applications/Minecraft Bedrock Launcher.app/Contents/MacOS/(\./)?mcpelauncher-client-arm64-v8a '
+        osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
+        pkill -TERM -f "$client_pattern" 2>/dev/null || true
+        attempt=0
+        while pgrep -f "$client_pattern" >/dev/null 2>&1 && [ "$attempt" -lt 10 ]; do
+            sleep 1
+            attempt=$((attempt + 1))
+        done
+        if pgrep -f "$client_pattern" >/dev/null 2>&1; then
+            echo "error: existing Minecraft client did not stop cleanly" >&2
+            exit 1
+        fi
+        open -n -b "$bundle_id" --args --profile "$profile"
+        ;;
+    linux)
+        app_id=io.mrarm.mcpelauncher
+        command -v flatpak >/dev/null 2>&1 || {
+            echo "error: Linux launch currently requires the mcpelauncher Flatpak" >&2
+            exit 1
+        }
+        flatpak info "$app_id" >/dev/null 2>&1 || {
+            echo "error: $app_id is not installed" >&2
+            exit 1
+        }
+        flatpak kill "$app_id" >/dev/null 2>&1 || true
+        flatpak run "$app_id" --profile "$profile" >/dev/null 2>&1 &
+        client_pattern='mcpelauncher-client'
+        ;;
+esac
 
-sleep 1
-open -n -b "$bundle_id" --args --profile "$profile"
 echo "Started launcher profile: $profile"
 
 attempt=0
