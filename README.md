@@ -68,6 +68,9 @@ then starts Minecraft and confirms Dobby is ready. Linux `x86_64` and ARM Linux/
 override detection. Use `./build.sh --local` for a build-only iteration or
 `./build.sh --help` for individual opt-outs.
 
+The install workflow also enables Dobby in the selected launcher profile. Set
+`DOBBY_LAUNCHER_PROFILE` when the launcher has more than one profile.
+
 On macOS, logs default to `~/Library/Application Support/mcpelauncher/`. The Linux
 Flatpak writes them under `~/.var/app/io.mrarm.mcpelauncher/data/mcpelauncher/`.
 Set `DOBBY_OUTPUT_DIR` to override the output directory. Set `DOBBY_LAUNCHER_ROOT`
