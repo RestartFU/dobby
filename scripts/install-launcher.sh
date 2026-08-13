@@ -51,7 +51,16 @@ if [ -f "$profiles" ]; then
         END {print registered}
     ' "$profiles")
 fi
-install_dir=${registered:-"$mods_root/dobby/1.26.40.5/$android_abi/"}
+if [ "$(host_platform)" = linux ]; then
+    mod_version=$(python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    print(json.load(source)["version"]["version"])
+' "$manifest")
+    install_dir="$mods_root/Dobby/$mod_version/$android_abi/"
+else
+    install_dir=${registered:-"$mods_root/dobby/1.26.40.5/$android_abi/"}
+fi
 
 case "$install_dir" in
     "$mods_root"/*) ;;
@@ -91,56 +100,19 @@ printf '%s\n' "$install_dir" > "$android_build/install-path.txt"
 echo "Installed Dobby $build_hash to: $install_dir"
 
 if [ -f "$profiles" ] && [ -n "$selected_profile" ]; then
-    if awk -v profile="$selected_profile" -v path="$install_dir" '
-        $0 == "[" profile "]" {selected=1; next}
-        /^\[/ {selected=0}
-        selected && /^mods\\[0-9][0-9]*\\path=/ {
-            registered=$0
-            sub(/^mods\\[0-9][0-9]*\\path=/, "", registered)
-            if (registered == path) found=1
-        }
-        END {exit !found}
-    ' "$profiles"; then
-        echo "Dobby is already enabled for launcher profile: $selected_profile"
-    else
-        next_mod_index=$(awk -v profile="$selected_profile" '
-            $0 == "[" profile "]" {selected=1; next}
-            /^\[/ {selected=0}
-            selected && /^mods\\[0-9][0-9]*\\path=/ {
-                slot=$0
-                sub(/^mods\\/, "", slot)
-                sub(/\\path=.*/, "", slot)
-                if (slot + 0 > maximum) maximum=slot + 0
-            }
-            END {print maximum + 1}
-        ' "$profiles")
-        profile_backup_dir="$launcher_root/disabled-mods/dobby-profile-backups"
-        mkdir -p "$profile_backup_dir"
-        profile_backup="$profile_backup_dir/profiles.$(date +%Y%m%d-%H%M%S).ini"
-        cp "$profiles" "$profile_backup"
-        profiles_temp="$profiles.dobby.$$"
-        trap 'rm -f "$profiles_temp"' EXIT HUP INT TERM
-        awk -v profile="$selected_profile" -v path="$install_dir" \
-                -v mod_index="$next_mod_index" '
-            function add_mod() {
-                if (added) return
-                printf "mods\\%d\\path=%s\n", mod_index, path
-                printf "mods\\size=%d\n", mod_index
-                added=1
-            }
-            /^\[/ {
-                if (selected) add_mod()
-                selected=($0 == "[" profile "]")
-            }
-            selected && /^mods\\size=/ {next}
-            {print}
-            END {if (selected) add_mod()}
-        ' "$profiles" > "$profiles_temp"
-        mv "$profiles_temp" "$profiles"
-        trap - EXIT HUP INT TERM
-        echo "Enabled Dobby for launcher profile: $selected_profile"
-        echo "Previous profile configuration backed up to: $profile_backup"
-    fi
+    python3 scripts/update-profile-mods.py \
+        --profiles "$profiles" \
+        --profile "$selected_profile" \
+        --mod-path "$install_dir" \
+        --backup-root "$launcher_root/disabled-mods/dobby-profile-backups"
+fi
+
+legacy_linux_root="$mods_root/dobby"
+if [ "$(host_platform)" = linux ] && [ -d "$legacy_linux_root" ]; then
+    layout_backup="$launcher_root/disabled-mods/dobby-layout-backups/$(date +%Y%m%d-%H%M%S)-$$"
+    mkdir -p "$layout_backup"
+    mv "$legacy_linux_root" "$layout_backup/dobby"
+    echo "Redundant Linux Dobby layout moved to: $layout_backup/dobby"
 fi
 
 if [ -d capes ]; then

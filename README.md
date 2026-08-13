@@ -69,7 +69,8 @@ override detection. Use `./build.sh --local` for a build-only iteration or
 `./build.sh --help` for individual opt-outs.
 
 The install workflow also enables Dobby in the selected launcher profile. Set
-`DOBBY_LAUNCHER_PROFILE` when the launcher has more than one profile.
+`DOBBY_LAUNCHER_PROFILE` when the launcher has more than one profile. Reinstalling
+normalizes stale Dobby registrations to one launcher-managed entry.
 
 On macOS, logs default to `~/Library/Application Support/mcpelauncher/`. The Linux
 Flatpak writes them under `~/.var/app/io.mrarm.mcpelauncher/data/mcpelauncher/`.
